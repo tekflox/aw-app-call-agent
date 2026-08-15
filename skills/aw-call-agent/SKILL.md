@@ -92,9 +92,20 @@ person); change `agent_slug` to call someone else entirely.
 4. **A silent reply with no deltas** means the agent's runner emits no
    `llm_token` events. The `done` frame's `text` still carries the whole
    reply; that path is deliberate.
-5. **No microphone in the browser** — `SpeechRecognition` is Chrome/Edge and
-   HTTPS only. The text box in the panel is a full substitute and exercises
-   the identical path.
+5. **Microphone vs transcription are two different failures.** They look
+   the same to a user and have nothing to do with each other:
+   - *Capture* is `getUserMedia`. `NotAllowedError`/`not-allowed` means a
+     permission or policy block; `NotFoundError` means no audio device.
+     Verified working 2026-08-15 against a fake audio device fed real
+     speech — live track, and the orb visibly tracking the waveform.
+   - *Transcription* is `SpeechRecognition`, which hands audio to a cloud
+     service (Chrome/Edge, online). Plain Chromium, Firefox and offline
+     setups have no engine: it starts, ends, and returns nothing — no error,
+     no result. The app now detects that (three consecutive runs where the
+     level meter clearly heard you and nothing came back) and says so
+     instead of sitting on "listening" forever.
+   The text box is a full substitute for either and exercises the identical
+   path from the socket onwards.
 
 ## Picking an agent
 

@@ -341,6 +341,15 @@ export function mountCallUI(root, io) {
   let ws = null, inCall = false, speak = true, streaming = null, dead = false;
   let lang = navigator.language || 'pt-BR';
   let recog = null, wantMic = false, micReady = false;
+  // Transcription health. `SpeechRecognition` can start, run and end having
+  // heard a perfectly loud voice and produced nothing — that is what a
+  // Chromium without a speech backend does (verified 2026-08-15 with a fake
+  // audio device fed real speech: getUserMedia live, orb tracking the
+  // waveform, recogniser ending with no result and no error). Without these
+  // counters the UI would sit on "listening" forever and look identical to a
+  // dead microphone, which is the exact symptom this app was already
+  // debugged for once. Say it out loud instead.
+  let peakSinceResult = 0, silentEnds = 0, gotResultThisRun = false, warnedNoTranscript = false;
   const audio = new Audio();
   audio.crossOrigin = 'anonymous';
   let levelTimer = null;
@@ -398,22 +407,60 @@ export function mountCallUI(root, io) {
     recog.continuous = false;
     recog.interimResults = false;
     recog.onresult = (e) => {
+      gotResultThisRun = true;
+      silentEnds = 0;
       const said = e.results[0][0].transcript.trim();
       if (said) send(said);
     };
     recog.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      if (e.error === 'not-allowed') {
         wantMic = false;
         add('err', 'Microphone blocked. Allow it for this site and press Call again — '
           + 'or just type below, it works the same.');
         setState('mic blocked', 'err', 'error');
+      } else if (e.error === 'network' || e.error === 'service-not-allowed') {
+        // Distinct from "blocked": the mic is fine, the speech-to-text
+        // *service* is unreachable. Chrome hands audio to Google to
+        // transcribe; a build without that backend (plain Chromium, some
+        // enterprise/offline setups) lands here.
+        wantMic = false;
+        noTranscriptWarning('this browser could not reach a speech-recognition service');
       }
+      // 'no-speech' and 'aborted' are ordinary — silence, or our own stop()
+      // between turns. Counting them would cry wolf on every quiet moment.
     };
-    recog.onend = () => { if (wantMic && inCall && !streaming) startMic(); };
+    recog.onend = () => {
+      if (!gotResultThisRun && peakSinceResult > 0.06) silentEnds++;
+      else if (gotResultThisRun) silentEnds = 0;
+      gotResultThisRun = false;
+      peakSinceResult = 0;
+      // Three consecutive rounds where the meter clearly heard you and the
+      // recogniser returned nothing is not bad luck.
+      if (silentEnds >= 3) {
+        wantMic = false;
+        noTranscriptWarning('your voice is coming through, but this browser '
+          + 'is not turning it into text');
+        return;
+      }
+      if (wantMic && inCall && !streaming) startMic();
+    };
     el('hint').textContent = 'Speak after "listening", or type. The reply is streamed and spoken back.';
   } else {
     el('hint').textContent = 'This browser has no speech recognition (Chrome/Edge only) — '
       + 'type instead. Replies are still spoken back to you.';
+  }
+
+  // One message, once per call — a warning repeated every three seconds is
+  // just a different kind of silence.
+  function noTranscriptWarning(why) {
+    if (!warnedNoTranscript) {
+      warnedNoTranscript = true;
+      add('err', 'Speech-to-text is not working here — ' + why + '. '
+        + 'Speech recognition needs Chrome or Edge with an internet connection; '
+        + 'Firefox and plain Chromium have no engine for it. '
+        + 'Typing below works exactly the same, and replies are still spoken back.');
+    }
+    setState('type instead', 'err', 'error');
   }
 
   function startMic() {
@@ -537,7 +584,11 @@ export function mountCallUI(root, io) {
   // is the one connected to the analyser.
   levelTimer = setInterval(() => {
     if (dead) return;
-    orb.setLevel(inCall ? meter.level() : 0);
+    const lv = inCall ? meter.level() : 0;
+    orb.setLevel(lv);
+    // Peak between recogniser runs — the evidence that separates "you said
+    // nothing" from "you spoke and nothing came back".
+    if (lv > peakSinceResult) peakSinceResult = lv;
   }, 50);
 
   // The picker is informational: which agent a call reaches is workspace
