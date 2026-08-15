@@ -63,6 +63,10 @@ PANEL_HTML = r"""<!doctype html>
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
   button.on { border-color: var(--good); color: var(--good); }
+  /* Icons are inline SVG, never emoji: the containers this renders in ship no
+     emoji font, so 📞/🔊 come out as empty boxes. */
+  button svg { width: 15px; height: 15px; vertical-align: -2px; margin-right: 6px; fill: none;
+               stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   #log {
     flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
     background: var(--panel); border: 1px solid var(--line);
@@ -85,7 +89,7 @@ PANEL_HTML = r"""<!doctype html>
     <span class="spacer"></span>
     <label for="agent">agent</label>
     <select id="agent"></select>
-    <button id="speak" class="on" title="Speak the agent's replies out loud">🔊 voice on</button>
+    <button id="speak" class="on" title="Speak the agent's replies out loud"></button>
     <button id="clear" title="Forget the conversation and start a fresh one">new</button>
   </div>
 
@@ -94,7 +98,7 @@ PANEL_HTML = r"""<!doctype html>
   </div>
 
   <div class="row">
-    <button id="call" class="primary">📞 Call</button>
+    <button id="call" class="primary"></button>
     <input id="text" type="text" placeholder="…or type a message and press Enter" disabled />
     <button id="send" disabled>Send</button>
   </div>
@@ -114,6 +118,14 @@ PANEL_HTML = r"""<!doctype html>
   var log = el('log'), dot = el('dot'), state = el('state');
   var callBtn = el('call'), sendBtn = el('send'), textIn = el('text');
   var agentSel = el('agent'), speakBtn = el('speak'), clearBtn = el('clear');
+
+  // Inline SVG, not emoji — see the stylesheet note.
+  var ICON = {
+    phone: '<svg viewBox="0 0 24 24"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.6 2.8a2 2 0 0 1-.4 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.5 2.8.6a2 2 0 0 1 1.8 2.1z"/></svg>',
+    hangup: '<svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
+    on: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+    off: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>'
+  };
 
   var ws = null, inCall = false, speak = true, streaming = null;
   var lang = navigator.language || 'pt-BR';
@@ -188,7 +200,7 @@ PANEL_HTML = r"""<!doctype html>
     inCall = false;
     stopMic();
     if (ws) { try { ws.close(); } catch (e) {} ws = null; }
-    callBtn.textContent = '📞 Call';
+    callBtn.innerHTML = ICON.phone + 'Call';
     callBtn.className = 'primary';
     textIn.disabled = true; sendBtn.disabled = true;
     setState(reason || 'idle', reason === 'error' ? 'err' : '');
@@ -205,7 +217,7 @@ PANEL_HTML = r"""<!doctype html>
       try { m = JSON.parse(ev.data); } catch (e) { return; }
 
       if (m.type === 'ready') {
-        callBtn.textContent = '⏹ Hang up';
+        callBtn.innerHTML = ICON.hangup + 'Hang up';
         callBtn.className = 'danger';
         textIn.disabled = false; sendBtn.disabled = false;
         add('sys', 'Connected to ' + m.agent
@@ -263,6 +275,9 @@ PANEL_HTML = r"""<!doctype html>
     if (recog) { try { recog.stop(); } catch (e) {} }
   }
 
+  callBtn.innerHTML = ICON.phone + 'Call';
+  speakBtn.innerHTML = ICON.on + 'voice on';
+
   callBtn.onclick = function () { if (inCall) hangUp('idle'); else connect(); };
   sendBtn.onclick = function () {
     var t = textIn.value.trim();
@@ -271,7 +286,7 @@ PANEL_HTML = r"""<!doctype html>
   textIn.onkeydown = function (e) { if (e.key === 'Enter') sendBtn.onclick(); };
   speakBtn.onclick = function () {
     speak = !speak;
-    speakBtn.textContent = speak ? '🔊 voice on' : '🔇 voice off';
+    speakBtn.innerHTML = (speak ? ICON.on : ICON.off) + (speak ? 'voice on' : 'voice off');
     speakBtn.className = speak ? 'on' : '';
     if (!speak) { audio.pause(); restartMic(); }
   };
