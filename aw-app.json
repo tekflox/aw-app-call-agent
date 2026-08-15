@@ -1,0 +1,130 @@
+{
+  "manifest_version": 1,
+  "id": "call-agent",
+  "name": "Call Agent",
+  "version": "0.1.0",
+  "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak — your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
+  "tier": "inprocess",
+  "requires_ui_refresh": true,
+  "category": "Runnables",
+  "publisher": "TekFlox",
+  "resource_estimate": {
+    "cpu": "low",
+    "memory": "low",
+    "disk": "low"
+  },
+  "runtime": {
+    "python": ">=3.11",
+    "entrypoint": "call_agent_app.plugin:CallAgentAppPlugin",
+    "pip_requires": [
+      "httpx",
+      "edge-tts"
+    ],
+    "standalone": {
+      "module": "call_agent_app",
+      "default_port": 9412
+    }
+  },
+  "permissions": [
+    "routes:register",
+    "net:outbound",
+    "fs:workspace-data"
+  ],
+  "contributes": {
+    "routes": [
+      {
+        "prefix": "/api/apps/call-agent"
+      }
+    ],
+    "windows": [
+      {
+        "id": "call-agent.main",
+        "title": "Call Agent",
+        "icon": "phone",
+        "body": {
+          "type": "declarative",
+          "spec": "windows/main.json"
+        }
+      },
+      {
+        "id": "call-agent.settings",
+        "title": "Call Agent — Settings",
+        "icon": "settings",
+        "body": {
+          "type": "declarative",
+          "spec": "windows/settings.json"
+        }
+      }
+    ],
+    "settings_panels": [
+      {
+        "id": "call-agent.settings-panel",
+        "window": "call-agent.settings"
+      }
+    ],
+    "skills": [
+      {
+        "id": "aw-call-agent",
+        "path": "skills/aw-call-agent/SKILL.md",
+        "description": "How the Call Agent app turns a voice call into an Agents Platform run — the WS protocol, the TTS endpoint, session continuity, and what to check when a call stalls."
+      }
+    ]
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "agent_slug": {
+        "type": "string",
+        "default": "telegram-sonnet",
+        "description": "Agents Platform agent slug a call is routed to. Pick one that answers in short spoken prose — a coding agent will narrate tool calls at you."
+      },
+      "external_id": {
+        "type": "string",
+        "default": "aw-call-shared",
+        "description": "Stable conversation key. The Target this app runs against is \"<agent_slug>-<external_id>\", auto-created on first call, so every call resumes the same conversation."
+      },
+      "prompt_template": {
+        "type": "string",
+        "default": "CONTEXT:\n- source: streaming_call\n- surface: voice\nAnswer in short spoken prose — no markdown, no lists, no step narration. Reply in the language the user spoke.\nUSER_MESSAGE:\n${text}",
+        "description": "Prompt sent to the agent. ${text} is replaced by what the caller said. Put a skill slash-command on the first line (e.g. \"/aw-agent-telegram\") if the agent expects one."
+      },
+      "default_voice_lang": {
+        "type": "string",
+        "default": "pt-BR",
+        "description": "Voice language used when the caller's browser does not report one (pt, en, es, it, fr, de)."
+      },
+      "agents_platform_base": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of the agents-platform instance calls are dispatched to. Leave blank to inherit whatever the Agents Platform Runners app is already configured with."
+      },
+      "agents_platform_token": {
+        "type": "string",
+        "x-secret": true,
+        "description": "Identity JWT sent as Authorization: Bearer to agents_platform_base. Leave blank to inherit the Agents Platform Runners app's token."
+      },
+      "poll_interval_seconds": {
+        "type": "number",
+        "default": 0.4,
+        "description": "How often the run's event log is polled while the agent is answering. Also the heartbeat rate the caller's stall watchdog sees."
+      },
+      "max_poll_seconds": {
+        "type": "number",
+        "default": 300,
+        "description": "How long a single call turn may take before it is given up on."
+      }
+    },
+    "required": []
+  },
+  "config_visible": true,
+  "dependencies": {
+    "apps": [
+      {
+        "id": "agents-platform-runners",
+        "required": false,
+        "reason": "Holds the agents-platform base URL and identity token this app falls back to when its own are blank, and runs the agent CLI a call is dispatched to."
+      }
+    ]
+  },
+  "migrations": {}
+}

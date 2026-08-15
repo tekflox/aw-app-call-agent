@@ -1,0 +1,14 @@
+{
+  "layout": "stack",
+  "regions": [
+    {
+      "id": "call",
+      "widgets": [
+        {
+          "type": "iframe",
+          "src": "/api/apps/call-agent/panel"
+        }
+      ]
+    }
+  ]
+}

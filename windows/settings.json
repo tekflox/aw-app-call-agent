@@ -1,0 +1,18 @@
+{
+  "layout": "stack",
+  "regions": [
+    {
+      "id": "about",
+      "widgets": [
+        {
+          "type": "markdown",
+          "value": "## Call Agent\nA call is a WebSocket carrying text: what you say is transcribed in the browser, sent to the agent below, and the reply is streamed back and spoken to you.\n\n**Agent** — pick one that answers in short spoken prose. A coding agent will narrate its tool calls at you.\n\n**Conversation** — every call resumes the same conversation, under the target `<agent>-<external id>`. Hit **new** in the call window to start a fresh one.\n\n**Credentials** — leave the agents-platform fields blank and this app inherits them from the Agents Platform Runners app. Fill them in only to call a different platform."
+        },
+        {
+          "type": "iframe",
+          "src": "/api/apps/call-agent/panel/status"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+# aw-app-call-agent
+
+Talk to your workspace agent out loud.
+
+Open the **Call Agent** window, hit call, and speak. Your voice is transcribed
+in the browser, sent to the agent you picked, and the reply is streamed back
+token by token and spoken to you in your own language. Every call resumes the
+same conversation instead of starting from scratch.
+
+A call is really **a WebSocket carrying text** — speech-to-text happens on the
+client and text-to-speech is one HTTP GET. Nothing about the protocol is
+audio, which is why the same socket serves the browser panel and the iOS
+`StreamingCallStore` client unchanged.
+
+## Where this came from
+
+Ported from `agentic-workspace/src/meta_display/call_agent.py`, which was
+itself the standalone `aw-call-agent` FastAPI service folded into the
+monolith's meta_display process in 2026-07.
+
+**Carried over as-is** — the Edge-TTS voice map and its iOS `en_US`
+underscore quirk, raw-MP3 (never transcoded) TTS output, markdown stripping
+before speech, the session-resume reconstruction over the Agents Platform
+REST API, the event-poll streaming loop, and **both** heartbeat paths. Those
+last two are load-bearing regression fixes, not defensive noise: an agent can
+emit zero `llm_token` events for a long stretch (container cold start, session
+resume, any tool-call phase) and the dispatch POST itself can queue behind the
+executor's per-Target lock. Without heartbeats a healthy turn gets killed by
+the client's stall watchdog. `call_agent_app/service.py` cites the monolith
+line numbers for each.
+
+**Changed, and why:**
+
+| Monolith | Here |
+|---|---|
+| Mixed into `MetaDisplayRoutes`; every turn broadcast to the glasses webapp, Watch and history log | No meta_display exists in aw-workspace — the WS client is the only surface. The durable record is Agents Platform's own run/event log. |
+| Target auto-provisioned by `run_sync` | `POST /api/agents/<slug>/run` 404s on an unknown target, so `ensure_target()` creates it on first call (409 = someone else won the race). |
+| Unauthenticated local instance | agents-platform-multitenant's `require_identity()` rejects anonymous calls — every request carries a bearer token. |
+| `AGENT_SLUG` / `EXTERNAL_ID` / the `/aw-apple-watch` prompt header hardcoded for one iOS app | `agent_slug`, `external_id`, `prompt_template` in Settings. |
+| Walked *every* run of the Target looking for a session id | Bounded to the newest 25, filtered server-side to `system.init` — a long-lived Target has thousands. |
+
+## Routes
+
+```
+GET /api/apps/call-agent/health          liveness + is a backend configured
+GET /api/apps/call-agent/settings        effective settings, token masked
+GET /api/apps/call-agent/agents-list     agent picker rows, proxied from AP
+GET /api/apps/call-agent/tts?text=&lang= raw MP3 (audio/mpeg)
+GET /api/apps/call-agent/panel           the browser call UI
+GET /api/apps/call-agent/panel/status    read-only diagnostics
+WS  /api/apps/call-agent/ws/call         the call
+```
+
+The protocol and the failure playbook live in
+[`skills/aw-call-agent/SKILL.md`](skills/aw-call-agent/SKILL.md).
+
+The UI is an `HTMLResponse` route, not a `ui/dist` bundle, because core serves
+everything under `/api/apps/<slug>/ui/` that isn't `.js` as
+`application/octet-stream` — an `index.html` there downloads instead of
+rendering. That also means no build step and no `ui:code` grant.
+
+## Configuration
+
+Leave `agents_platform_base` and `agents_platform_token` **blank** and the app
+inherits both from the Agents Platform Runners app, which every workspace that
+can run an agent already has configured. Fill them in only to point calls at a
+different platform. `GET /settings` reports which layer won
+(`app-config` → `env` → `inherited:agents-platform-runners` → `unset`), so a
+blank one is diagnosable without reading a log.
+
+Pick an agent that answers in short spoken prose — a coding agent will narrate
+its tool calls at you.
+
+## Development
+
+```bash
+python3 -m pytest tests/ -q          # routes, WS protocol, ported helpers
+python3 tests/validate_manifest.py   # manifest + referenced files + widgets
+
+AW_AGENTS_PLATFORM_BASE=http://127.0.0.1:10014 \
+AW_AGENTS_PLATFORM_TOKEN=<jwt> \
+python3 -m call_agent_app            # standalone on 127.0.0.1:9412
+```
+
+Standalone mounts the same sub-app at the same prefix with no `IdentityGuard`,
+and `GET /` redirects to the panel — same UI, same paths, same protocol.
