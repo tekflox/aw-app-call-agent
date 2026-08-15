@@ -341,15 +341,26 @@ export function mountCallUI(root, io) {
   let ws = null, inCall = false, speak = true, streaming = null, dead = false;
   let lang = navigator.language || 'pt-BR';
   let recog = null, wantMic = false, micReady = false;
-  // Transcription health. `SpeechRecognition` can start, run and end having
-  // heard a perfectly loud voice and produced nothing — that is what a
-  // Chromium without a speech backend does (verified 2026-08-15 with a fake
-  // audio device fed real speech: getUserMedia live, orb tracking the
-  // waveform, recogniser ending with no result and no error). Without these
-  // counters the UI would sit on "listening" forever and look identical to a
-  // dead microphone, which is the exact symptom this app was already
-  // debugged for once. Say it out loud instead.
-  let peakSinceResult = 0, silentEnds = 0, gotResultThisRun = false, warnedNoTranscript = false;
+  // Transcription health.
+  //
+  // `SpeechRecognition` can be present, accept `start()` without throwing,
+  // and then emit **nothing at all** — no `start`, no `error`, no `end`,
+  // forever. Measured 2026-08-15 on the workspace's own Chromium against a
+  // fake audio device fed real looping speech: 30 seconds, zero events, while
+  // `getUserMedia` held a live track and the orb tracked the waveform the
+  // whole time. That is a browser with no speech backend, and it is
+  // indistinguishable from a dead microphone to anyone watching the screen —
+  // the UI just says "listening" and never moves. Exactly the symptom this
+  // app was already debugged for once.
+  //
+  // So the detector is a **clock**, not an event counter: an event-based
+  // check cannot fire in a browser that emits no events. `silentEnds` is kept
+  // as a faster secondary trigger for browsers that do cycle properly but
+  // return nothing.
+  const NO_TRANSCRIPT_AFTER_MS = 12000;   // heard a voice this long, got no text
+  const AUDIBLE = 0.06;                   // level that counts as "someone spoke"
+  let peakSinceResult = 0, silentEnds = 0, gotResultThisRun = false;
+  let warnedNoTranscript = false, listeningSince = 0;
   const audio = new Audio();
   audio.crossOrigin = 'anonymous';
   let levelTimer = null;
@@ -409,6 +420,8 @@ export function mountCallUI(root, io) {
     recog.onresult = (e) => {
       gotResultThisRun = true;
       silentEnds = 0;
+      peakSinceResult = 0;
+      listeningSince = Date.now();
       const said = e.results[0][0].transcript.trim();
       if (said) send(said);
     };
@@ -430,7 +443,7 @@ export function mountCallUI(root, io) {
       // between turns. Counting them would cry wolf on every quiet moment.
     };
     recog.onend = () => {
-      if (!gotResultThisRun && peakSinceResult > 0.06) silentEnds++;
+      if (!gotResultThisRun && peakSinceResult > AUDIBLE) silentEnds++;
       else if (gotResultThisRun) silentEnds = 0;
       gotResultThisRun = false;
       peakSinceResult = 0;
@@ -465,9 +478,17 @@ export function mountCallUI(root, io) {
 
   function startMic() {
     if (!recog || !inCall || !micReady) return;
-    try { recog.start(); setState('listening', 'on', 'listening'); } catch (e) { /* already running */ }
+    try {
+      recog.start();
+      if (!listeningSince) listeningSince = Date.now();
+      setState('listening', 'on', 'listening');
+    } catch (e) { /* already running */ }
   }
-  function stopMic() { wantMic = false; if (recog) { try { recog.stop(); } catch (e) {} } }
+  function stopMic() {
+    wantMic = false;
+    listeningSince = 0;
+    if (recog) { try { recog.stop(); } catch (e) {} }
+  }
   function restartMic() {
     if (inCall && wantMic && !streaming) startMic();
     else if (inCall) setState('ready', 'on', 'idle');
@@ -556,6 +577,8 @@ export function mountCallUI(root, io) {
   function send(text) {
     if (!ws || ws.readyState !== 1) return;
     add('me', text);
+    listeningSince = 0;
+    peakSinceResult = 0;
     // Stop listening while the agent answers, or the spoken reply feeds
     // straight back into the recogniser and the call talks to itself.
     if (recog) { try { recog.stop(); } catch (e) {} }
@@ -586,9 +609,17 @@ export function mountCallUI(root, io) {
     if (dead) return;
     const lv = inCall ? meter.level() : 0;
     orb.setLevel(lv);
-    // Peak between recogniser runs — the evidence that separates "you said
+    // Peak since the last transcript — the evidence that separates "you said
     // nothing" from "you spoke and nothing came back".
     if (lv > peakSinceResult) peakSinceResult = lv;
+    if (inCall && wantMic && !streaming && listeningSince
+        && peakSinceResult > AUDIBLE
+        && Date.now() - listeningSince > NO_TRANSCRIPT_AFTER_MS) {
+      wantMic = false;
+      listeningSince = 0;
+      noTranscriptWarning('your voice is coming through, but this browser '
+        + 'is not turning it into text');
+    }
   }, 50);
 
   // The picker is informational: which agent a call reaches is workspace

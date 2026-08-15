@@ -99,11 +99,16 @@ person); change `agent_slug` to call someone else entirely.
      Verified working 2026-08-15 against a fake audio device fed real
      speech — live track, and the orb visibly tracking the waveform.
    - *Transcription* is `SpeechRecognition`, which hands audio to a cloud
-     service (Chrome/Edge, online). Plain Chromium, Firefox and offline
-     setups have no engine: it starts, ends, and returns nothing — no error,
-     no result. The app now detects that (three consecutive runs where the
-     level meter clearly heard you and nothing came back) and says so
-     instead of sitting on "listening" forever.
+     service (Chrome/Edge, online). A browser without that backend — plain
+     Chromium, Firefox, offline/enterprise setups — does something worse
+     than fail: `start()` returns without throwing and then **no event ever
+     fires**. Not `start`, not `error`, not `end`. Measured on this
+     workspace's own Chromium: 30 seconds, zero events, while the mic track
+     was live the whole time.
+     That is why the app's detector is a **clock, not an event counter** —
+     after 12 seconds of audible input with no transcript it says so and
+     falls back to typing. If you add a check here, never hang it off a
+     `SpeechRecognition` event: in the failing case there are none.
    The text box is a full substitute for either and exercises the identical
    path from the socket onwards.
 
