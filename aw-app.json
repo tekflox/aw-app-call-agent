@@ -2,8 +2,8 @@
   "manifest_version": 1,
   "id": "call-agent",
   "name": "Call Agent",
-  "version": "0.1.0",
-  "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak — your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
+  "version": "0.2.0",
+  "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak \u2014 your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
   "tier": "inprocess",
   "requires_ui_refresh": true,
   "category": "Runnables",
@@ -48,7 +48,7 @@
       },
       {
         "id": "call-agent.settings",
-        "title": "Call Agent — Settings",
+        "title": "Call Agent \u2014 Settings",
         "icon": "settings",
         "body": {
           "type": "declarative",
@@ -66,7 +66,7 @@
       {
         "id": "aw-call-agent",
         "path": "skills/aw-call-agent/SKILL.md",
-        "description": "How the Call Agent app turns a voice call into an Agents Platform run — the WS protocol, the TTS endpoint, session continuity, and what to check when a call stalls."
+        "description": "How the Call Agent app turns a voice call into an Agents Platform run \u2014 the WS protocol, the TTS endpoint, session continuity, and what to check when a call stalls."
       }
     ]
   },
@@ -76,7 +76,7 @@
       "agent_slug": {
         "type": "string",
         "default": "telegram-sonnet",
-        "description": "Agents Platform agent slug a call is routed to. Pick one that answers in short spoken prose — a coding agent will narrate tool calls at you."
+        "description": "Agents Platform agent slug a call is routed to. Pick one that answers in short spoken prose \u2014 a coding agent will narrate tool calls at you."
       },
       "external_id": {
         "type": "string",
@@ -85,7 +85,7 @@
       },
       "prompt_template": {
         "type": "string",
-        "default": "CONTEXT:\n- source: streaming_call\n- surface: voice\nAnswer in short spoken prose — no markdown, no lists, no step narration. Reply in the language the user spoke.\nUSER_MESSAGE:\n${text}",
+        "default": "CONTEXT:\n- source: streaming_call\n- surface: voice\nAnswer in short spoken prose \u2014 no markdown, no lists, no step narration. Reply in the language the user spoke.\nUSER_MESSAGE:\n${text}",
         "description": "Prompt sent to the agent. ${text} is replaced by what the caller said. Put a skill slash-command on the first line (e.g. \"/aw-agent-telegram\") if the agent expects one."
       },
       "default_voice_lang": {
