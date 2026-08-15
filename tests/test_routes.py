@@ -181,3 +181,35 @@ def test_markdown_is_stripped_before_speech():
 def test_prompt_template_always_carries_the_users_words():
     assert "olá" in CallSettings(prompt_template="no placeholder").build_prompt("olá")
     assert CallSettings(prompt_template="say: ${text}").build_prompt("oi") == "say: oi"
+
+
+# ---- the frontend bundle ----------------------------------------------------
+
+def test_bundle_declared_in_the_manifest_exists_and_exports_both_entrypoints():
+    """The window body is component mode, so a missing or half-exported bundle
+    means the window renders empty chrome and nothing else — the failure shape
+    a denied/absent `ui:code` bundle produces, which reads as a bug in the app.
+    """
+    root = Path(__file__).resolve().parent.parent
+    manifest = json.loads((root / "aw-app.json").read_text())
+    bundle = root / manifest["contributes"]["frontend"]["bundle"]
+    assert bundle.is_file(), f"{bundle} is declared in aw-app.json but not committed"
+
+    src = bundle.read_text()
+    # `register` is what the SPA calls; `mountCallUI` is what the /panel shell
+    # imports. Losing either silently kills one surface and not the other.
+    assert "export function register(" in src
+    assert "export function mountCallUI(" in src
+    assert "export default register" in src
+
+    # The window body slot must be the one this app's window declares.
+    window_ids = {w["id"] for w in manifest["contributes"]["windows"]}
+    for slot in manifest["contributes"]["frontend"].get("slots", []):
+        if slot.startswith("core.window.body:"):
+            assert slot.split(":", 1)[1] in window_ids
+
+
+def test_panel_shell_loads_the_same_bundle():
+    from call_agent_app.panel import PANEL_HTML
+    assert "./ui/call-agent.js" in PANEL_HTML
+    assert "mountCallUI" in PANEL_HTML

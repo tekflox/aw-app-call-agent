@@ -54,10 +54,40 @@ WS  /api/apps/call-agent/ws/call         the call
 The protocol and the failure playbook live in
 [`skills/aw-call-agent/SKILL.md`](skills/aw-call-agent/SKILL.md).
 
-The UI is an `HTMLResponse` route, not a `ui/dist` bundle, because core serves
-everything under `/api/apps/<slug>/ui/` that isn't `.js` as
-`application/octet-stream` — an `index.html` there downloads instead of
-rendering. That also means no build step and no `ui:code` grant.
+## The UI, and why it is not an iframe
+
+The window body is **component mode** — `ui/dist/call-agent.js` is loaded
+into the SPA's own document. That is not a style preference, it is what makes
+the microphone work at all.
+
+The first version rendered the panel through the declarative `iframe` widget
+and the mic never worked. `aw-workspace-ui/src/components/AppWindow.jsx:296`
+builds that `<iframe>` with a `sandbox` attribute and **no `allow`**, and the
+panel is served from the API host while the SPA runs on the workspace host —
+a cross-origin frame with no `allow="microphone"` is denied the mic by
+Permissions Policy before any script runs. `SpeechRecognition` fails with
+`not-allowed` and the browser never even offers a prompt. Confirmed in the
+live DOM 2026-08-15: the attribute came back `null`.
+
+Core gaining an `allow` passthrough on that widget would be worth having for
+every app that wants mic, camera or clipboard in a declarative window — but
+it is not this app's change to make, and component mode needs nothing from
+core.
+
+The bundle is one hand-written ES module with two entry points — `register`
+for the SPA, `mountCallUI` for the `/panel` shell — so the window and
+standalone mode cannot drift. There is no build step: no JSX, no npm
+dependency (React comes from `host.React`, never imported), so a bundler
+would only add a way for the shipped file to drift from the source. The
+markup shell stays an `HTMLResponse` route because core serves everything
+under `/api/apps/<slug>/ui/` that isn't `.js` as `application/octet-stream`,
+so an `index.html` there downloads instead of rendering.
+
+The orb is a rebuild, not a port — the standalone `aw-call-agent` repo it
+came from no longer exists. It is an indicator rather than decoration: idle
+breathes, listening tracks your voice, thinking spins with no level input
+(the agent is deliberately quiet during tool calls), speaking tracks the
+reply audio. A silent call is never ambiguous.
 
 ## Configuration
 

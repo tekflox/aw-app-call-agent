@@ -28,7 +28,8 @@
   "permissions": [
     "routes:register",
     "net:outbound",
-    "fs:workspace-data"
+    "fs:workspace-data",
+    "ui:code"
   ],
   "contributes": {
     "routes": [
@@ -42,8 +43,7 @@
         "title": "Call Agent",
         "icon": "phone",
         "body": {
-          "type": "declarative",
-          "spec": "windows/main.json"
+          "type": "component"
         }
       },
       {
@@ -68,7 +68,14 @@
         "path": "skills/aw-call-agent/SKILL.md",
         "description": "How the Call Agent app turns a voice call into an Agents Platform run \u2014 the WS protocol, the TTS endpoint, session continuity, and what to check when a call stalls."
       }
-    ]
+    ],
+    "frontend": {
+      "mode": "component",
+      "bundle": "ui/dist/call-agent.js",
+      "slots": [
+        "core.window.body:call-agent.main"
+      ]
+    }
   },
   "config_schema": {
     "type": "object",
