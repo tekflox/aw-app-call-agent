@@ -276,6 +276,9 @@ const CSS = `
 .cag-row{display:flex;gap:8px;flex:none}
 .cag-row input{flex:1}
 .cag-hint{color:#8b949e;font-size:12px;flex:none}
+.cag-diag{flex:none;max-height:150px;overflow:auto;margin:0;padding:10px 12px;background:#0d1117;
+  border:1px solid #262d38;border-radius:8px;color:#8b949e;font:11px/1.45 ui-monospace,SFMono-Regular,
+  Menlo,monospace;white-space:pre-wrap;user-select:text}
 @media (max-width:640px){.cag-stage{flex-direction:column}.cag-orbwrap{width:100%;height:38%;min-width:0}}
 `;
 
@@ -296,8 +299,10 @@ const HTML = `
   <label>agent</label>
   <select data-el="agent"></select>
   <button class="on" data-el="speak" title="Speak the agent's replies out loud"></button>
+  <button data-el="diag" title="What speech recognition is actually doing">diag</button>
   <button data-el="clear" title="Forget the conversation and start a fresh one">new</button>
 </div>
+<pre class="cag-diag" data-el="diagpanel" hidden></pre>
 <div class="cag-stage">
   <div class="cag-orbwrap">
     <canvas class="cag-orb" data-el="orb"></canvas>
@@ -339,6 +344,14 @@ export function mountCallUI(root, io) {
   const meter = createMeter();
 
   let ws = null, inCall = false, speak = true, streaming = null, dead = false;
+  // `streaming` holds the DOM node the reply is being written into, so it is
+  // null from the moment a turn is sent until the FIRST token arrives, and
+  // null again from `done` through the whole spoken reply. Using it as "is a
+  // turn in flight" — which this file did — meant the recogniser restarted
+  // while the agent was still thinking and again while its reply was being
+  // spoken, so the call listened to its own voice. Turn state gets its own
+  // flag; the node stays a node.
+  let turnInFlight = false;
   let lang = navigator.language || 'pt-BR';
   let recog = null, wantMic = false, micReady = false;
   // Transcription health.
@@ -357,6 +370,22 @@ export function mountCallUI(root, io) {
   // check cannot fire in a browser that emits no events. `silentEnds` is kept
   // as a faster secondary trigger for browsers that do cycle properly but
   // return nothing.
+  let diagOpen = false, meterReleased = false;
+
+  // Every SpeechRecognition event, with timings — the only way to tell the
+  // failure modes apart, and they are invisible otherwise. `no-speech` while
+  // the meter hears a voice means the recogniser is not getting the audio;
+  // `network`/`service-not-allowed` mean the cloud side refused; no events at
+  // all mean no engine. Surfaced through the "diag" button so a user can hand
+  // back a fact instead of "it doesn't work".
+  const srLog = [];
+  let srT0 = 0, lastSrError = '';
+  function srNote(name, extra) {
+    srLog.push({ ev: name, ms: srT0 ? Date.now() - srT0 : 0, extra: extra || '' });
+    if (srLog.length > 40) srLog.shift();
+    if (diagOpen) renderDiag();
+  }
+
   const NO_TRANSCRIPT_AFTER_MS = 12000;   // heard a voice this long, got no text
   const AUDIBLE = 0.06;                   // level that counts as "someone spoke"
   let peakSinceResult = 0, silentEnds = 0, gotResultThisRun = false;
@@ -417,15 +446,22 @@ export function mountCallUI(root, io) {
     recog.lang = lang;
     recog.continuous = false;
     recog.interimResults = false;
+    ['start', 'audiostart', 'soundstart', 'speechstart', 'speechend',
+     'soundend', 'audioend', 'nomatch'].forEach((n) => {
+      recog['on' + n] = () => srNote(n);
+    });
     recog.onresult = (e) => {
+      const said = e.results[0][0].transcript.trim();
+      srNote('result', said.slice(0, 60));
       gotResultThisRun = true;
       silentEnds = 0;
       peakSinceResult = 0;
       listeningSince = Date.now();
-      const said = e.results[0][0].transcript.trim();
       if (said) send(said);
     };
     recog.onerror = (e) => {
+      lastSrError = e.error;
+      srNote('error', e.error);
       if (e.error === 'not-allowed') {
         wantMic = false;
         add('err', 'Microphone blocked. Allow it for this site and press Call again — '
@@ -443,6 +479,7 @@ export function mountCallUI(root, io) {
       // between turns. Counting them would cry wolf on every quiet moment.
     };
     recog.onend = () => {
+      srNote('end');
       if (!gotResultThisRun && peakSinceResult > AUDIBLE) silentEnds++;
       else if (gotResultThisRun) silentEnds = 0;
       gotResultThisRun = false;
@@ -455,7 +492,7 @@ export function mountCallUI(root, io) {
           + 'is not turning it into text');
         return;
       }
-      if (wantMic && inCall && !streaming) startMic();
+      if (wantMic && inCall && !turnInFlight) startMic();
     };
     el('hint').textContent = 'Speak after "listening", or type. The reply is streamed and spoken back.';
   } else {
@@ -471,13 +508,46 @@ export function mountCallUI(root, io) {
       add('err', 'Speech-to-text is not working here — ' + why + '. '
         + 'Speech recognition needs Chrome or Edge with an internet connection; '
         + 'Firefox and plain Chromium have no engine for it. '
+        + 'Press "diag" above for the raw event log. '
         + 'Typing below works exactly the same, and replies are still spoken back.');
+      diagOpen = true;
+      const panel = el('diagpanel');
+      if (panel) { panel.hidden = false; renderDiag(); }
     }
     setState('type instead', 'err', 'error');
   }
 
+  // Heard a voice for NO_TRANSCRIPT_AFTER_MS and got no text back. Before
+  // giving up, test the one hypothesis this app can test by itself: the level
+  // meter holds its own getUserMedia stream for the orb, and some browsers
+  // will not hand the same microphone to the recogniser at the same time.
+  // Drop the meter and try once more — if a transcript arrives, that was it,
+  // and the call keeps working (the orb just stops tracking amplitude while
+  // listening). If it fails again, say so with the real error attached.
+  function onNoTranscript() {
+    listeningSince = 0;
+    if (!meterReleased && micReady) {
+      meterReleased = true;
+      meter.closeMic();
+      peakSinceResult = 0;
+      add('sys', 'No text came back from speech recognition — retrying without '
+        + 'the audio level meter, in case it was holding the microphone.');
+      // Restart the recogniser cleanly on the freed device.
+      try { recog.abort(); } catch (e) { /* not running */ }
+      listeningSince = Date.now();
+      setTimeout(() => { if (inCall && wantMic) startMic(); }, 400);
+      return;
+    }
+    wantMic = false;
+    noTranscriptWarning('your voice is coming through, but this browser is not '
+      + 'turning it into text'
+      + (lastSrError ? ' (speech recognition reported "' + lastSrError + '")' : '')
+      + (srLog.length ? '' : ' — and it emitted no events at all'));
+  }
+
   function startMic() {
-    if (!recog || !inCall || !micReady) return;
+    if (!recog || !inCall || !micReady || turnInFlight) return;
+    if (!srT0) srT0 = Date.now();
     try {
       recog.start();
       if (!listeningSince) listeningSince = Date.now();
@@ -490,7 +560,11 @@ export function mountCallUI(root, io) {
     if (recog) { try { recog.stop(); } catch (e) {} }
   }
   function restartMic() {
-    if (inCall && wantMic && !streaming) startMic();
+    // The turn is over the moment we are willing to listen again — this is
+    // the single place that clears it, so every path (spoke, muted, TTS
+    // failed) converges here.
+    turnInFlight = false;
+    if (inCall && wantMic && !turnInFlight) startMic();
     else if (inCall) setState('ready', 'on', 'idle');
     else setState('idle', '', 'idle');
   }
@@ -498,6 +572,7 @@ export function mountCallUI(root, io) {
   // ---- the call ---------------------------------------------------------
   function hangUp(reason) {
     inCall = false;
+    turnInFlight = false;
     stopMic();
     meter.closeMic();
     micReady = false;
@@ -543,7 +618,7 @@ export function mountCallUI(root, io) {
         textIn.focus();
 
       } else if (m.type === 'heartbeat') {
-        if (streaming) setState('thinking…', 'busy', 'thinking');
+        if (turnInFlight) setState('thinking…', 'busy', 'thinking');
 
       } else if (m.type === 'text_delta') {
         if (!streaming) streaming = add('agent', '');
@@ -565,6 +640,7 @@ export function mountCallUI(root, io) {
 
       } else if (m.type === 'error') {
         streaming = null;
+        turnInFlight = false;
         add('err', m.message || 'unknown error');
         setState('error', 'err', 'error');
       }
@@ -577,6 +653,7 @@ export function mountCallUI(root, io) {
   function send(text) {
     if (!ws || ws.readyState !== 1) return;
     add('me', text);
+    turnInFlight = true;
     listeningSince = 0;
     peakSinceResult = 0;
     // Stop listening while the agent answers, or the spoken reply feeds
@@ -598,6 +675,34 @@ export function mountCallUI(root, io) {
     speakBtn.className = speak ? 'on' : '';
     if (!speak) { try { audio.pause(); } catch (e) {} restartMic(); }
   };
+  // Diagnostics. The failure this exists for is invisible by construction —
+  // a recogniser that emits nothing looks exactly like one that is patiently
+  // listening. Printing the raw event stream turns "it doesn't work" into a
+  // specific, reportable fact.
+  function renderDiag() {
+    const panel = el('diagpanel');
+    if (!panel) return;
+    const lines = [
+      'speech recognition : ' + (recog ? 'available' : 'ABSENT in this browser'),
+      'recognition lang   : ' + (recog ? recog.lang : '-'),
+      'mic (getUserMedia) : ' + (micReady ? 'open' + (meterReleased ? ' -> level meter released for retry' : '') : 'not open'),
+      'peak since result  : ' + peakSinceResult.toFixed(3) + '  (counts as audible above ' + AUDIBLE + ')',
+      'last error         : ' + (lastSrError || 'none'),
+      'events             : ' + (srLog.length || 'NONE — the recogniser is emitting nothing at all'),
+      '',
+    ];
+    srLog.slice(-24).forEach((e) => {
+      lines.push(String(e.ms).padStart(6) + 'ms  ' + e.ev + (e.extra ? '  ' + e.extra : ''));
+    });
+    panel.textContent = lines.join('\n');
+  }
+
+  el('diag').onclick = () => {
+    diagOpen = !diagOpen;
+    el('diagpanel').hidden = !diagOpen;
+    if (diagOpen) renderDiag();
+  };
+
   clearBtn.onclick = () => {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'clear' }));
     else add('sys', 'Start a call first.');
@@ -612,13 +717,14 @@ export function mountCallUI(root, io) {
     // Peak since the last transcript — the evidence that separates "you said
     // nothing" from "you spoke and nothing came back".
     if (lv > peakSinceResult) peakSinceResult = lv;
-    if (inCall && wantMic && !streaming && listeningSince
-        && peakSinceResult > AUDIBLE
+    // Once the meter is released we can no longer hear anything, so the
+    // "was there a voice" evidence is gone and time alone has to decide —
+    // otherwise the second chance could never time out and the retry would
+    // hang forever, which is the very failure this whole path exists to end.
+    if (inCall && wantMic && !turnInFlight && listeningSince
+        && (meterReleased || peakSinceResult > AUDIBLE)
         && Date.now() - listeningSince > NO_TRANSCRIPT_AFTER_MS) {
-      wantMic = false;
-      listeningSince = 0;
-      noTranscriptWarning('your voice is coming through, but this browser '
-        + 'is not turning it into text');
+      onNoTranscript();
     }
   }, 50);
 
