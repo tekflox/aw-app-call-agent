@@ -87,7 +87,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "pattern": "^(routes:register|routes:local|db:own-tables|commands:install|service:manage|watchdog:tasks|tasks:contribute|agents:contribute|notifications:send|containers:manage|mcp:register-gateway|config:extend:[a-z0-9-]+|net:outbound|fs:workspace-data|secrets:own|ui:code|ui:slots:[a-z0-9.:_-]+)$"
+        "pattern": "^(routes:register|routes:local|db:own-tables|commands:install|service:manage|watchdog:tasks|tasks:contribute|agents:contribute|notifications:send|containers:manage|mcp:register-gateway|config:extend:[a-z0-9-]+|net:outbound|fs:workspace-data|fs:workspace-read|secrets:own|ui:code|ui:slots:[a-z0-9.:_-]+)$"
       }
     },
     "contributes": {
