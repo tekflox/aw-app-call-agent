@@ -111,6 +111,15 @@ person); change `agent_slug` to call someone else entirely.
      `SpeechRecognition` event: in the failing case there are none.
    The text box is a full substitute for either and exercises the identical
    path from the socket onwards.
+6. **Check the language before believing anything else.** Press **diag** in
+   the call window: it prints the recogniser's language, where that value
+   came from, and the raw `SpeechRecognition` event stream with timings.
+   A recogniser set to `en-US` while the caller speaks Portuguese returns
+   nothing usable — mic prompt appears, level meter sees the voice, no
+   transcript ever arrives. It is the single most convincing impostor for a
+   broken microphone. The call's language comes from `default_voice_lang` in
+   Settings (NOT the browser's UI language, which is a guess about a
+   different question) and the picker in the bar overrides it live.
 
 ## Picking an agent
 

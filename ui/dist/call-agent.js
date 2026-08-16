@@ -299,6 +299,7 @@ const HTML = `
   <label>agent</label>
   <select data-el="agent"></select>
   <button class="on" data-el="speak" title="Speak the agent's replies out loud"></button>
+  <select data-el="lang" title="Language you speak, and the voice you hear"></select>
   <button data-el="diag" title="What speech recognition is actually doing">diag</button>
   <button data-el="clear" title="Forget the conversation and start a fresh one">new</button>
 </div>
@@ -339,6 +340,7 @@ export function mountCallUI(root, io) {
   const dot = el('dot'), stateEl = el('state'), logEl = el('log'), caption = el('caption');
   const callBtn = el('call'), sendBtn = el('send'), textIn = el('text');
   const agentSel = el('agent'), speakBtn = el('speak'), clearBtn = el('clear');
+  const langSel = el('lang');
 
   const orb = createOrb(el('orb'));
   const meter = createMeter();
@@ -352,7 +354,35 @@ export function mountCallUI(root, io) {
   // spoken, so the call listened to its own voice. Turn state gets its own
   // flag; the node stays a node.
   let turnInFlight = false;
-  let lang = navigator.language || 'pt-BR';
+  // Which language the call is spoken and heard in.
+  //
+  // This used to be `navigator.language`, with the workspace's configured
+  // `default_voice_lang` applied only if that was falsy — i.e. never. So a
+  // browser whose UI is English set the recogniser to en-US while the caller
+  // spoke Portuguese, and Chrome returned nothing usable: the mic prompt
+  // appears, the level meter sees the voice, and no transcript ever arrives.
+  // That is a language mismatch wearing the costume of a broken microphone.
+  //
+  // The call's language is workspace configuration; the browser's UI language
+  // is a guess about a different question. Settings wins, `navigator.language`
+  // is the fallback, and the picker below overrides both live.
+  const LANGS = [
+    ['pt-BR', 'Português'], ['en-US', 'English'], ['es-ES', 'Español'],
+    ['fr-FR', 'Français'], ['it-IT', 'Italiano'], ['de-DE', 'Deutsch'],
+  ];
+  // A bare subtag ("pt") is legal but vaguer than the recogniser likes, so
+  // widen it to the regional tag this app already speaks.
+  function normaliseLang(v) {
+    if (!v) return '';
+    const want = String(v).replace('_', '-');
+    const exact = LANGS.find((l) => l[0].toLowerCase() === want.toLowerCase());
+    if (exact) return exact[0];
+    const base = want.split('-')[0].toLowerCase();
+    const near = LANGS.find((l) => l[0].split('-')[0] === base);
+    return near ? near[0] : want;
+  }
+  let lang = normaliseLang(navigator.language) || 'pt-BR';
+  let langSource = 'browser';
   let recog = null, wantMic = false, micReady = false;
   // Transcription health.
   //
@@ -684,7 +714,8 @@ export function mountCallUI(root, io) {
     if (!panel) return;
     const lines = [
       'speech recognition : ' + (recog ? 'available' : 'ABSENT in this browser'),
-      'recognition lang   : ' + (recog ? recog.lang : '-'),
+      'recognition lang   : ' + (recog ? recog.lang : '-') + '  (from ' + langSource + ')',
+      'browser language   : ' + (navigator.language || 'unknown'),
       'mic (getUserMedia) : ' + (micReady ? 'open' + (meterReleased ? ' -> level meter released for retry' : '') : 'not open'),
       'peak since result  : ' + peakSinceResult.toFixed(3) + '  (counts as audible above ' + AUDIBLE + ')',
       'last error         : ' + (lastSrError || 'none'),
@@ -696,6 +727,25 @@ export function mountCallUI(root, io) {
     });
     panel.textContent = lines.join('\n');
   }
+
+  LANGS.forEach(([code, label]) => {
+    const o = document.createElement('option');
+    o.value = code; o.textContent = label;
+    langSel.appendChild(o);
+  });
+  langSel.value = lang;
+  langSel.onchange = () => {
+    lang = langSel.value;
+    langSource = 'picked here';
+    if (recog) recog.lang = lang;
+    // Applies to the next utterance; restart so it takes effect now.
+    if (inCall && wantMic && !turnInFlight) {
+      try { recog.abort(); } catch (e) { /* not running */ }
+      listeningSince = Date.now();
+      setTimeout(() => { if (inCall && wantMic) startMic(); }, 300);
+    }
+    if (diagOpen) renderDiag();
+  };
 
   el('diag').onclick = () => {
     diagOpen = !diagOpen;
@@ -734,10 +784,12 @@ export function mountCallUI(root, io) {
   io.fetch('/settings')
     .then((r) => r.json())
     .then((s) => {
-      if (s.default_voice_lang && !navigator.language) {
-        lang = s.default_voice_lang;
+      if (s.default_voice_lang) {
+        lang = normaliseLang(s.default_voice_lang) || lang;
+        langSource = 'workspace settings';
         if (recog) recog.lang = lang;
       }
+      if (langSel) langSel.value = lang;
       return io.fetch('/agents-list').then((r) => r.json()).then((a) => {
         (a.agents || []).forEach((row) => {
           const o = document.createElement('option');
