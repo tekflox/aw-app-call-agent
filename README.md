@@ -89,6 +89,21 @@ breathes, listening tracks your voice, thinking spins with no level input
 (the agent is deliberately quiet during tool calls), speaking tracks the
 reply audio. A silent call is never ambiguous.
 
+## The call window
+
+- **Agent picker** — filter-as-you-type over every agent on the platform
+  (there are dozens). Picking one sends `set_agent`, which re-points the
+  socket *and* its conversation target, for that call only.
+- **Pause** — how much silence ends your turn. Chrome's own end-of-speech is
+  sub-second and cuts people off mid-thought, so the recogniser runs
+  `continuous` and this client decides instead. Default 2s
+  (`speech_pause_ms`).
+- **Language** — what you speak and what you hear. Comes from
+  `default_voice_lang`, not the browser's UI language.
+- **diag** — the raw `SpeechRecognition` event stream, the language and where
+  it came from, mic state and the last error. Opens itself when
+  speech-to-text fails, which is otherwise indistinguishable from silence.
+
 ## Configuration
 
 Leave `agents_platform_base` and `agents_platform_token` **blank** and the app

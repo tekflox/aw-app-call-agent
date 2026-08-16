@@ -105,6 +105,7 @@ def resolve(config: dict | None) -> CallSettings:
         prompt_template=cfg.get("prompt_template") or defaults.prompt_template,
         default_voice_lang=(cfg.get("default_voice_lang")
                             or defaults.default_voice_lang).strip(),
+        speech_pause_ms=_num(cfg.get("speech_pause_ms"), defaults.speech_pause_ms),
         poll_interval_seconds=_num(cfg.get("poll_interval_seconds"),
                                    defaults.poll_interval_seconds),
         max_poll_seconds=_num(cfg.get("max_poll_seconds"), defaults.max_poll_seconds),

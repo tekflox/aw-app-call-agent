@@ -276,6 +276,16 @@ const CSS = `
 .cag-row{display:flex;gap:8px;flex:none}
 .cag-row input{flex:1}
 .cag-hint{color:#8b949e;font-size:12px;flex:none}
+.cag-combo{position:relative;min-width:190px}
+.cag-combo input{width:100%}
+.cag-opts{position:absolute;z-index:30;top:calc(100% + 4px);left:0;right:0;max-height:230px;
+  overflow-y:auto;background:#0d1117;border:1px solid #262d38;border-radius:8px;
+  box-shadow:0 10px 26px rgba(0,0,0,.55)}
+.cag-opt{padding:7px 10px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cag-opt small{color:#8b949e;margin-left:6px}
+.cag-opt:hover,.cag-opt.sel{background:#1f6feb33}
+.cag-opt.cur{color:#3fb950}
+.cag-none{padding:7px 10px;color:#8b949e}
 .cag-diag{flex:none;max-height:150px;overflow:auto;margin:0;padding:10px 12px;background:#0d1117;
   border:1px solid #262d38;border-radius:8px;color:#8b949e;font:11px/1.45 ui-monospace,SFMono-Regular,
   Menlo,monospace;white-space:pre-wrap;user-select:text}
@@ -296,8 +306,17 @@ const HTML = `
   <span class="cag-dot" data-el="dot"></span>
   <span class="cag-state" data-el="state">idle</span>
   <span class="cag-sp"></span>
-  <label>agent</label>
-  <select data-el="agent"></select>
+  <div class="cag-combo">
+    <input data-el="agentq" type="text" placeholder="agent…" autocomplete="off" spellcheck="false" />
+    <div class="cag-opts" data-el="agentlist" hidden></div>
+  </div>
+  <select data-el="pause" title="How long a pause means you have finished speaking">
+    <option value="1000">1s pause</option>
+    <option value="2000">2s pause</option>
+    <option value="3000">3s pause</option>
+    <option value="5000">5s pause</option>
+    <option value="8000">8s pause</option>
+  </select>
   <button class="on" data-el="speak" title="Speak the agent's replies out loud"></button>
   <select data-el="lang" title="Language you speak, and the voice you hear"></select>
   <button data-el="diag" title="What speech recognition is actually doing">diag</button>
@@ -339,7 +358,8 @@ export function mountCallUI(root, io) {
 
   const dot = el('dot'), stateEl = el('state'), logEl = el('log'), caption = el('caption');
   const callBtn = el('call'), sendBtn = el('send'), textIn = el('text');
-  const agentSel = el('agent'), speakBtn = el('speak'), clearBtn = el('clear');
+  const speakBtn = el('speak'), clearBtn = el('clear');
+  const agentQ = el('agentq'), agentList = el('agentlist'), pauseSel = el('pause');
   const langSel = el('lang');
 
   const orb = createOrb(el('orb'));
@@ -416,6 +436,17 @@ export function mountCallUI(root, io) {
     if (diagOpen) renderDiag();
   }
 
+  // How long a pause ends an utterance. The browser's own end-of-speech
+  // detection fires after well under a second of silence, which cuts people
+  // off mid-thought — the complaint that produced this. So the recogniser now
+  // runs in `continuous` mode with interim results and never decides on its
+  // own when you are finished: transcripts accumulate here and a silence
+  // timer of this length sends them. Configurable per workspace
+  // (`speech_pause_ms`); overridable live from the bar.
+  let pauseMs = 2000;
+  let utterance = '';          // finalised text waiting on the pause timer
+  let pauseTimer = null;
+
   const NO_TRANSCRIPT_AFTER_MS = 12000;   // heard a voice this long, got no text
   const AUDIBLE = 0.06;                   // level that counts as "someone spoke"
   let peakSinceResult = 0, silentEnds = 0, gotResultThisRun = false;
@@ -474,20 +505,37 @@ export function mountCallUI(root, io) {
   if (SR) {
     recog = new SR();
     recog.lang = lang;
-    recog.continuous = false;
-    recog.interimResults = false;
+    // continuous + interim: WE decide when the caller is done, not Chrome.
+    recog.continuous = true;
+    recog.interimResults = true;
     ['start', 'audiostart', 'soundstart', 'speechstart', 'speechend',
      'soundend', 'audioend', 'nomatch'].forEach((n) => {
       recog['on' + n] = () => srNote(n);
     });
     recog.onresult = (e) => {
-      const said = e.results[0][0].transcript.trim();
-      srNote('result', said.slice(0, 60));
+      // In continuous mode the event carries every result so far; only the
+      // ones past resultIndex are new, and only `isFinal` ones are settled
+      // text. Interim results still count as "you are still talking" and so
+      // push the pause timer out.
+      let finalAdd = '', interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const alt = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalAdd += alt;
+        else interim += alt;
+      }
       gotResultThisRun = true;
       silentEnds = 0;
       peakSinceResult = 0;
       listeningSince = Date.now();
-      if (said) send(said);
+
+      if (finalAdd.trim()) {
+        utterance = (utterance + ' ' + finalAdd).trim();
+        srNote('result', finalAdd.trim().slice(0, 60));
+      } else if (interim.trim()) {
+        srNote('interim', interim.trim().slice(0, 40));
+      }
+      showPending(utterance, interim.trim());
+      armPause();
     };
     recog.onerror = (e) => {
       lastSrError = e.error;
@@ -575,6 +623,37 @@ export function mountCallUI(root, io) {
       + (srLog.length ? '' : ' — and it emitted no events at all'));
   }
 
+  // A ghost bubble showing what is being heard right now, so a long pause
+  // reads as "it has me, it is waiting" instead of "it froze".
+  let pendingEl = null;
+  function showPending(settled, interim) {
+    const text = (settled + ' ' + (interim || '')).trim();
+    if (!text) { clearPending(); return; }
+    if (!pendingEl) {
+      pendingEl = add('me', '');
+      pendingEl.style.opacity = '0.55';
+    }
+    pendingEl.textContent = text + ' …';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function clearPending() {
+    if (pendingEl && pendingEl.parentNode) pendingEl.parentNode.removeChild(pendingEl);
+    pendingEl = null;
+  }
+
+  function armPause() {
+    if (pauseTimer) clearTimeout(pauseTimer);
+    pauseTimer = setTimeout(flushUtterance, pauseMs);
+  }
+
+  function flushUtterance() {
+    if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
+    const text = utterance.trim();
+    utterance = '';
+    clearPending();
+    if (text) send(text);
+  }
+
   function startMic() {
     if (!recog || !inCall || !micReady || turnInFlight) return;
     if (!srT0) srT0 = Date.now();
@@ -587,6 +666,9 @@ export function mountCallUI(root, io) {
   function stopMic() {
     wantMic = false;
     listeningSince = 0;
+    if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
+    utterance = '';
+    clearPending();
     if (recog) { try { recog.stop(); } catch (e) {} }
   }
   function restartMic() {
@@ -641,6 +723,13 @@ export function mountCallUI(root, io) {
         callBtn.innerHTML = ICON.hangup + 'Hang up';
         callBtn.className = 'danger';
         textIn.disabled = false; sendBtn.disabled = false;
+        // An agent chosen before the call started is applied now.
+        if (currentAgent && currentAgent !== m.agent) {
+          ws.send(JSON.stringify({ type: 'set_agent', slug: currentAgent }));
+        } else {
+          currentAgent = m.agent;
+          agentQ.value = currentAgent;
+        }
         add('sys', 'Connected to ' + m.agent
           + (m.resumed ? ' — resuming your last conversation.' : ' — new conversation.'));
         wantMic = !!recog && micReady;
@@ -665,6 +754,16 @@ export function mountCallUI(root, io) {
         streaming = null;
         say(spoken);
 
+      } else if (m.type === 'agent_changed') {
+        currentAgent = m.agent;
+        agentQ.value = currentAgent;
+        agentQ.title = 'Conversation target: ' + m.target;
+        add('sys', 'Now calling ' + m.agent
+          + (m.resumed ? ' — resuming your last conversation with them.'
+                       : ' — new conversation.'));
+        wantMic = !!recog && micReady;
+        if (wantMic) startMic(); else setState('ready', 'on', 'idle');
+
       } else if (m.type === 'cleared') {
         add('sys', 'Conversation reset — the next thing you say starts fresh.');
 
@@ -682,6 +781,9 @@ export function mountCallUI(root, io) {
 
   function send(text) {
     if (!ws || ws.readyState !== 1) return;
+    if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
+    utterance = '';
+    clearPending();
     add('me', text);
     turnInFlight = true;
     listeningSince = 0;
@@ -705,6 +807,82 @@ export function mountCallUI(root, io) {
     speakBtn.className = speak ? 'on' : '';
     if (!speak) { try { audio.pause(); } catch (e) {} restartMic(); }
   };
+  // ---- agent picker ------------------------------------------------------
+  // There are dozens of agents, so this is a filter-as-you-type combobox
+  // rather than a select. Picking one is a real switch, not a label: it sends
+  // `set_agent`, which re-points this socket AND its conversation target
+  // (`<agent>-<external_id>`), so each agent keeps its own thread. It applies
+  // to this call only — nothing here writes workspace config.
+  let agents = [], currentAgent = '', filtered = [], hi = -1;
+
+  function closestPause(ms) {
+    const opts = [1000, 2000, 3000, 5000, 8000];
+    return opts.reduce((b, o) => (Math.abs(o - ms) < Math.abs(b - ms) ? o : b), opts[0]);
+  }
+
+  function renderAgents() {
+    const q = agentQ.value.trim().toLowerCase();
+    filtered = agents.filter((a) => !q
+      || a.slug.toLowerCase().includes(q)
+      || String(a.name || '').toLowerCase().includes(q));
+    if (!filtered.length) {
+      agentList.innerHTML = '<div class="cag-none">no agent matches</div>';
+      return;
+    }
+    agentList.innerHTML = '';
+    filtered.slice(0, 60).forEach((a, i) => {
+      const d = document.createElement('div');
+      d.className = 'cag-opt' + (i === hi ? ' sel' : '') + (a.slug === currentAgent ? ' cur' : '');
+      d.textContent = a.name || a.slug;
+      if (a.name && a.name !== a.slug) {
+        const sm = document.createElement('small');
+        sm.textContent = a.slug;
+        d.appendChild(sm);
+      }
+      // mousedown, not click: blur would close the list first.
+      d.onmousedown = (e) => { e.preventDefault(); pickAgent(a.slug); };
+      agentList.appendChild(d);
+    });
+  }
+
+  function openAgents() { hi = -1; agentList.hidden = false; renderAgents(); }
+  function closeAgents() { agentList.hidden = true; agentQ.value = currentAgent; }
+
+  function pickAgent(slug) {
+    agentList.hidden = true;
+    agentQ.value = slug;
+    if (slug === currentAgent) return;
+    if (!ws || ws.readyState !== 1) {
+      // Not connected yet — remember it and apply on `ready`.
+      currentAgent = slug;
+      add('sys', 'Next call will go to ' + slug + '.');
+      return;
+    }
+    stopMic();
+    ws.send(JSON.stringify({ type: 'set_agent', slug }));
+    setState('switching…', 'busy', 'thinking');
+  }
+
+  agentQ.onfocus = () => { agentQ.select(); openAgents(); };
+  agentQ.oninput = () => { hi = -1; agentList.hidden = false; renderAgents(); };
+  agentQ.onblur = () => setTimeout(closeAgents, 120);
+  agentQ.onkeydown = (e) => {
+    if (agentList.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) openAgents();
+    if (e.key === 'ArrowDown') { hi = Math.min(hi + 1, filtered.length - 1); renderAgents(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { hi = Math.max(hi - 1, 0); renderAgents(); e.preventDefault(); }
+    else if (e.key === 'Enter') {
+      const chosen = filtered[hi >= 0 ? hi : 0];
+      if (chosen) pickAgent(chosen.slug);
+      e.preventDefault();
+    } else if (e.key === 'Escape') { closeAgents(); agentQ.blur(); }
+  };
+
+  pauseSel.onchange = () => {
+    pauseMs = Number(pauseSel.value) || 2000;
+    add('sys', 'Waiting ' + (pauseMs / 1000) + 's of silence before sending what you said.');
+    if (diagOpen) renderDiag();
+  };
+
   // Diagnostics. The failure this exists for is invisible by construction —
   // a recogniser that emits nothing looks exactly like one that is patiently
   // listening. Printing the raw event stream turns "it doesn't work" into a
@@ -718,6 +896,7 @@ export function mountCallUI(root, io) {
       'browser language   : ' + (navigator.language || 'unknown'),
       'mic (getUserMedia) : ' + (micReady ? 'open' + (meterReleased ? ' -> level meter released for retry' : '') : 'not open'),
       'peak since result  : ' + peakSinceResult.toFixed(3) + '  (counts as audible above ' + AUDIBLE + ')',
+      'end-of-speech pause: ' + pauseMs + 'ms',
       'last error         : ' + (lastSrError || 'none'),
       'events             : ' + (srLog.length || 'NONE — the recogniser is emitting nothing at all'),
       '',
@@ -790,15 +969,15 @@ export function mountCallUI(root, io) {
         if (recog) recog.lang = lang;
       }
       if (langSel) langSel.value = lang;
+      if (s.speech_pause_ms) {
+        pauseMs = Math.max(300, Number(s.speech_pause_ms) || pauseMs);
+        if (pauseSel) pauseSel.value = String(closestPause(pauseMs));
+      }
+      currentAgent = s.agent_slug;
+      agentQ.value = currentAgent;
+      agentQ.title = 'Conversation target: ' + s.target_slug;
       return io.fetch('/agents-list').then((r) => r.json()).then((a) => {
-        (a.agents || []).forEach((row) => {
-          const o = document.createElement('option');
-          o.value = row.slug; o.textContent = row.name || row.slug;
-          agentSel.appendChild(o);
-        });
-        agentSel.value = s.agent_slug;
-        agentSel.disabled = true;
-        agentSel.title = 'Set in this app’s Settings (target: ' + s.target_slug + ')';
+        agents = (a.agents || []).filter((x) => x && x.slug);
         if (!s.agents_platform_base || !s.has_token) {
           add('err', 'No agents-platform credentials configured — open Settings.');
         }

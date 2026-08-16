@@ -20,6 +20,7 @@ The WS keeps the wire protocol the monolith used verbatim
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Callable
 
@@ -70,6 +71,7 @@ def build_routes(config_provider: Callable[[], dict] | None = None) -> FastAPI:
             "external_id": s.external_id,
             "target_slug": s.target_slug,
             "default_voice_lang": s.default_voice_lang,
+            "speech_pause_ms": s.speech_pause_ms,
             "agents_platform_base": s.agents_platform_base,
             # Never echo the JWT back into a browser — whether one exists is
             # the only thing the UI needs to know.
@@ -117,11 +119,23 @@ def build_routes(config_provider: Callable[[], dict] | None = None) -> FastAPI:
         async def on_delta(delta: str) -> None:
             await ws.send_json({"type": "text_delta", "text": delta})
 
+        async def bind_agent(settings: CallSettings) -> tuple[CallAgentService, str | None]:
+            """Point this socket at an agent: make sure its Target exists and
+            resume whatever conversation it already had.
+
+            Switching agent switches Target (``<agent>-<external_id>``), so each
+            agent keeps its own thread rather than inheriting the last one's —
+            which is the only sane reading of "call someone else"."""
+            svc = CallAgentService(settings)
+            sid: str | None = None
+            async with svc.client(timeout=15.0) as client:
+                await svc.ensure_target(client)
+                sid = await svc.latest_target_session_id(client)
+            return svc, sid
+
         claude_session_id: str | None = None
         try:
-            async with service.client(timeout=15.0) as client:
-                await service.ensure_target(client)
-                claude_session_id = await service.latest_target_session_id(client)
+            service, claude_session_id = await bind_agent(s)
         except CallAgentError as exc:
             # A misconfigured workspace should say so on the phone, not fail
             # silently on the first thing the caller says.
@@ -146,6 +160,34 @@ def build_routes(config_provider: Callable[[], dict] | None = None) -> FastAPI:
                     await ws.send_json({"type": "cleared"})
                     continue
 
+                if data.get("type") == "set_agent":
+                    slug = (data.get("slug") or "").strip()
+                    if not slug or slug == s.agent_slug:
+                        continue
+                    # Rebuild from the CURRENT config so a settings save that
+                    # happened mid-call is picked up too, then override the
+                    # agent for the rest of this socket only — nothing here
+                    # writes back to workspace config.
+                    s = dataclasses.replace(current(), agent_slug=slug)
+                    try:
+                        service, claude_session_id = await bind_agent(s)
+                    except CallAgentError as exc:
+                        await ws.send_json({"type": "error", "message": str(exc)})
+                        continue
+                    except Exception as exc:
+                        log.warning("could not switch agent", exc_info=True)
+                        await ws.send_json({
+                            "type": "error",
+                            "message": f"Could not switch to {slug}: {exc}"})
+                        continue
+                    await ws.send_json({
+                        "type": "agent_changed",
+                        "agent": s.agent_slug,
+                        "target": s.target_slug,
+                        "resumed": bool(claude_session_id),
+                    })
+                    continue
+
                 if data.get("type") != "message":
                     continue
 
@@ -153,7 +195,9 @@ def build_routes(config_provider: Callable[[], dict] | None = None) -> FastAPI:
                 if not user_text:
                     continue
 
-                s = current()
+                # Re-read config every turn (a settings save mid-call should
+                # apply), but keep whichever agent this socket is bound to.
+                s = dataclasses.replace(current(), agent_slug=s.agent_slug)
                 service = CallAgentService(s)
                 prompt = s.build_prompt(user_text)
 

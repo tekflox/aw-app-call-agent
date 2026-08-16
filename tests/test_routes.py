@@ -213,3 +213,32 @@ def test_panel_shell_loads_the_same_bundle():
     from call_agent_app.panel import PANEL_HTML
     assert "./ui/call-agent.js" in PANEL_HTML
     assert "mountCallUI" in PANEL_HTML
+
+
+def test_ws_set_agent_repoints_the_socket_and_its_target(client):
+    """Picking an agent mid-call must move the conversation too: each agent
+    keeps its own Target, so switching cannot silently continue the previous
+    agent's thread under a new name."""
+    with client.websocket_connect("/ws/call") as ws:
+        assert ws.receive_json()["target"] == "telegram-sonnet-test"
+
+        ws.send_json({"type": "set_agent", "slug": "coder-sonnet"})
+        changed = ws.receive_json()
+        assert changed["type"] == "agent_changed"
+        assert changed["agent"] == "coder-sonnet"
+        assert changed["target"] == "coder-sonnet-test"
+
+
+def test_ws_set_agent_ignores_a_no_op(client):
+    with client.websocket_connect("/ws/call") as ws:
+        ws.receive_json()
+        # Same agent, and a blank slug: neither should produce a frame, so the
+        # next thing on the wire is the ack for the clear that follows.
+        ws.send_json({"type": "set_agent", "slug": "telegram-sonnet"})
+        ws.send_json({"type": "set_agent", "slug": "  "})
+        ws.send_json({"type": "clear"})
+        assert ws.receive_json()["type"] == "cleared"
+
+
+def test_settings_exposes_the_speech_pause(client):
+    assert client.get("/settings").json()["speech_pause_ms"] == 2000.0

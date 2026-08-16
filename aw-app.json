@@ -119,6 +119,11 @@
         "type": "number",
         "default": 300,
         "description": "How long a single call turn may take before it is given up on."
+      },
+      "speech_pause_ms": {
+        "type": "number",
+        "default": 2000,
+        "description": "How long a pause has to be before the caller is treated as having finished speaking, in milliseconds. Raise it if you think between sentences and the call keeps cutting you off."
       }
     },
     "required": []

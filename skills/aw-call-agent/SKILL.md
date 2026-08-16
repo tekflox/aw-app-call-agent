@@ -27,6 +27,7 @@ Client → server:
 |---|---|
 | `{"type":"message","text":"…"}` | one turn — what the caller said |
 | `{"type":"clear"}` | forget the resumed session; next turn starts fresh |
+| `{"type":"set_agent","slug":"…"}` | call a different agent for the rest of this socket |
 
 Server → client:
 
@@ -37,6 +38,7 @@ Server → client:
 | `{"type":"text_delta","text":"…"}` | one `llm_token` delta |
 | `{"type":"done","text":"…","run_id":…}` | end of turn, full reply |
 | `{"type":"cleared"}` | ack for `clear` |
+| `{"type":"agent_changed","agent":…,"target":…,"resumed":bool}` | ack for `set_agent` |
 | `{"type":"error","message":"…"}` | turn failed; socket stays open |
 
 **Do not drop the heartbeats.** They arrive on every poll tick, including
@@ -62,6 +64,23 @@ GET /api/apps/call-agent/panel/status   read-only diagnostics for Settings
 to OGG/Opus for Telegram; the call clients decode MP3 directly and changing
 the format breaks them. Markdown is stripped before synthesis — an agent that
 writes `**done**` must not have "asterisk asterisk done" read out.
+
+`set_agent` switches the **Target** too (`<agent>-<external_id>`), so each
+agent keeps its own thread instead of inheriting the last one's — and the new
+one's prior session is resumed if it has one. It applies to that socket only;
+nothing writes back to workspace config, so the configured `agent_slug`
+remains the default for the next call.
+
+## End of speech is decided here, not by the browser
+
+The recogniser runs `continuous: true` with interim results and is never
+allowed to decide when the caller has finished. Transcripts accumulate in the
+client and a silence timer sends them — `speech_pause_ms` in Settings
+(default 2000), overridable live from the picker in the bar. Chrome's own
+end-of-speech fires after well under a second, which cuts off anyone who
+thinks mid-sentence; that is the entire reason for this design. A greyed
+"…" bubble shows what has been heard so far, so a long pause reads as
+waiting rather than frozen.
 
 ## Conversation continuity
 

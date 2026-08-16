@@ -109,6 +109,10 @@ class CallSettings:
         "narration. Reply in the language the user spoke.\nUSER_MESSAGE:\n${text}"
     )
     default_voice_lang: str = "pt-BR"
+    #: Silence, in ms, that ends an utterance. The browser's own end-of-speech
+    #: detection is far too eager for someone who thinks mid-sentence, so the
+    #: client does its own with this value.
+    speech_pause_ms: float = 2000.0
     poll_interval_seconds: float = 0.4
     max_poll_seconds: float = 300.0
     #: Where the base/token actually came from — surfaced by GET /settings so
