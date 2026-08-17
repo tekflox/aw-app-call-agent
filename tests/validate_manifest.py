@@ -1,12 +1,31 @@
 #!/usr/bin/env python3
-"""Validates aw-app.json — schema, referenced files, and the things that only
-blow up on a REAL install.
+"""Validates an app's aw-app.json — schema, referenced files, and the things
+that only blow up on a REAL install.
 
-Run with the AW venv (jsonschema is installed there):
-    .venv/aw/bin/python tests/validate_manifest.py
+**The canonical copy lives in aw-marketplace** (`scripts/validate_manifest.py`
++ `schemas/aw-app.schema.json`), and `app-release.yml` runs THAT against every
+app it releases. This copy is for running the same checks locally before you
+push:
 
-TEMPLATE: copy this file verbatim into any new app — it's fully generic,
-nothing here references "hello"/"template".
+    python3 tests/validate_manifest.py aw-app.json
+
+TEMPLATE: keep this file. A new app inherits it from here, and it is the
+difference between finding a bad manifest now and finding it when a release
+fails. CI no longer depends on its presence — but you do.
+
+It used to live only inside each app repo, alongside a copy of the schema. That
+produced 28 copies in 10 different versions, drifting apart with nobody
+noticing — and the release workflow only ran the check `if [ -f
+tests/validate_manifest.py ]`, so an app that simply lacked the file published
+with no validation at all. That is how aw-app-kb's release failed on a
+permission its schema copy had never heard of while aw-app-architecture, which
+declares the same one, released green without being checked.
+
+    python3 validate_manifest.py <manifest.json> [--schema <schema.json>]
+
+If this local copy drifts from the canonical one it can only be *more*
+permissive by accident — CI validates against aw-marketplace's either way, so a
+stale copy here can no longer let anything through.
 
 Beyond the JSON schema, this catches three classes of bug that a schema
 cannot, and that every one of them has shipped at least once:
@@ -32,13 +51,40 @@ import jsonschema
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The manifest under test. Defaults to this repo's own; an explicit path lets
-# the same checks run against a fragment that isn't the app root — that's how
-# `examples/` stays honest instead of drifting into documentation nobody
-# executes. Referenced files are resolved relative to the MANIFEST's dir, the
-# schema always from this repo.
-MANIFEST_PATH = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "aw-app.json"
+# Referenced files resolve relative to the MANIFEST's directory, so this runs
+# against any app's checkout from anywhere.
+_args = [a for a in sys.argv[1:] if not a.startswith("--")]
+_schema_flag = None
+if "--schema" in sys.argv:
+    _schema_flag = Path(sys.argv[sys.argv.index("--schema") + 1]).resolve()
+
+MANIFEST_PATH = Path(_args[0]).resolve() if _args else Path("aw-app.json").resolve()
 APP_ROOT = MANIFEST_PATH.parent
+def _resolve_schema() -> Path:
+    """Where the schema comes from, most explicit first.
+
+    A new app does NOT need its own `schemas/` copy — that duplication is what
+    produced 28 files in 10 drifted versions. If this repo happens to still
+    carry one it is honoured (older apps do), otherwise the canonical copy in a
+    sibling aw-marketplace checkout is used, which is also what CI validates
+    against.
+    """
+    if _schema_flag:
+        return _schema_flag
+    local = ROOT / "schemas" / "aw-app.schema.json"
+    if local.is_file():
+        return local
+    sibling = ROOT.parent / "aw-marketplace" / "schemas" / "aw-app.schema.json"
+    if sibling.is_file():
+        return sibling
+    raise SystemExit(
+        "no schema found. This repo has no schemas/aw-app.schema.json and "
+        "aw-marketplace is not checked out next to it — pass one explicitly:\n"
+        "    python3 tests/validate_manifest.py aw-app.json --schema <path>"
+    )
+
+
+SCHEMA_PATH = _resolve_schema()
 
 # The widget types aw-workspace-ui's declarative renderer actually implements
 # (src/components/AppWindow.jsx). Keep in sync with that file; anything else
@@ -72,7 +118,7 @@ def warn(msg: str) -> None:
 
 
 manifest = json.loads(MANIFEST_PATH.read_text())
-schema = json.loads((ROOT / "schemas" / "aw-app.schema.json").read_text())
+schema = json.loads(SCHEMA_PATH.read_text())
 jsonschema.validate(instance=manifest, schema=schema)
 
 contributes = manifest.get("contributes", {}) or {}
