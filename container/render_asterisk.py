@@ -78,7 +78,8 @@ type=endpoint
 transport=transport-udp
 context=internal
 disallow=all
-allow=alaw,ulaw
+; Keep the internal test leg on PCMU for consistent NATed softphone audio.
+allow=ulaw
 auth={extension}-auth
 aors={extension}
 direct_media=no
@@ -144,6 +145,9 @@ retry_interval=60
 extensions = f"""[internal]
 exten => {agent_extension},1,NoOp(Internal call to AW Call Agent)
  same => n,Answer()
+ same => n,Playtones(440/250)
+ same => n,Wait(0.3)
+ same => n,StopPlaytones()
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
  same => n,Hangup()
@@ -153,6 +157,9 @@ if zadarma_enabled:
 
 [from-zadarma]
 exten => _X.,1,Answer()
+ same => n,Playtones(440/250)
+ same => n,Wait(0.3)
+ same => n,StopPlaytones()
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
  same => n,Hangup()

@@ -113,11 +113,20 @@ class SipSoftphoneTester:
                  host: str = "127.0.0.1", port: int = 5060):
         self.username, self.password, self.extension = username, password, extension
         self.host, self.port = host, port
+        # Bind on every interface so this tester also works from a genuinely
+        # external host.  Binding to loopback made local PBX tests pass while
+        # every packet to a public SIP address failed before leaving macOS.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect((host, port))
+            self.local_address = probe.getsockname()[0]
+        finally:
+            probe.close()
         self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sip.bind(("127.0.0.1", 0))
+        self.sip.bind(("0.0.0.0", 0))
         self.sip.settimeout(8)
         self.rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.rtp.bind(("127.0.0.1", 0))
+        self.rtp.bind(("0.0.0.0", 0))
         self.rtp.settimeout(0.02)
         self.local_sip_port = self.sip.getsockname()[1]
         self.local_rtp_port = self.rtp.getsockname()[1]
@@ -133,13 +142,13 @@ class SipSoftphoneTester:
         branch = branch or f"z9hG4bK{uuid.uuid4().hex[:14]}"
         headers = [
             f"{method} {uri} SIP/2.0",
-            f"Via: SIP/2.0/UDP 127.0.0.1:{self.local_sip_port};branch={branch};rport",
+            f"Via: SIP/2.0/UDP {self.local_address}:{self.local_sip_port};branch={branch};rport",
             "Max-Forwards: 70",
             f"From: <sip:{self.username}@{self.host}>;tag={self.from_tag}",
             f"To: {to}",
             f"Call-ID: {self.call_id}",
             f"CSeq: {cseq} {method}",
-            f"Contact: <sip:{self.username}@127.0.0.1:{self.local_sip_port}>",
+            f"Contact: <sip:{self.username}@{self.local_address}:{self.local_sip_port}>",
             "User-Agent: aw-call-agent-sip-tester/1",
         ]
         if authorization:
@@ -175,8 +184,8 @@ class SipSoftphoneTester:
     def _invite(self) -> tuple[tuple[str, int], str]:
         uri = f"sip:{self.extension}@{self.host}"
         to = f"<sip:{self.extension}@{self.host}>"
-        sdp = ("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=AW SIP test\r\n"
-               "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+        sdp = (f"v=0\r\no=- 1 1 IN IP4 {self.local_address}\r\ns=AW SIP test\r\n"
+               f"c=IN IP4 {self.local_address}\r\nt=0 0\r\n"
                f"m=audio {self.local_rtp_port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
                "a=sendrecv\r\n")
         self._send("INVITE", uri, 10, to=to, body=sdp)
