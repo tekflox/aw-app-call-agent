@@ -1,8 +1,31 @@
-FROM python:3.11-slim-bullseye
+FROM debian:bookworm-slim AS asterisk-build
+
+ARG ASTERISK_VERSION=20.20.1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl libedit-dev libjansson-dev \
+        libsqlite3-dev libssl-dev libxml2-dev pkg-config uuid-dev \
+    && curl -fsSL \
+        "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VERSION}.tar.gz" \
+        -o /asterisk.tar.gz \
+    && mkdir /src && tar -xzf /asterisk.tar.gz -C /src --strip-components=1 \
+    && cd /src \
+    && ./configure --prefix=/usr --with-jansson-bundled --with-pjproject-bundled \
+    && make menuselect.makeopts \
+    && menuselect/menuselect --enable app_audiosocket --enable res_audiosocket \
+         --enable func_uuid menuselect.makeopts \
+    && make -j"$(nproc)" \
+    && make DESTDIR=/stage install \
+    && test -f /stage/usr/lib/asterisk/modules/app_audiosocket.so \
+    && test -f /stage/usr/lib/asterisk/modules/func_uuid.so
+
+FROM python:3.11-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        asterisk ffmpeg ca-certificates \
+        ffmpeg ca-certificates libedit2 libjansson4 libsqlite3-0 libssl3 \
+        libxml2 libuuid1 libncurses6 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=asterisk-build /stage/ /
 
 WORKDIR /app
 COPY requirements.txt .
