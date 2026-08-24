@@ -18,7 +18,7 @@ class SipSpeechPipeline:
         self._model = None
         self._sessions: dict[str, str | None] = {}
 
-    def _transcribe_sync(self, pcm: bytes) -> str:
+    def _transcribe_sync(self, pcm: bytes, language: str | None = None) -> str:
         if self._model is None:
             from faster_whisper import WhisperModel
             self._model = WhisperModel(
@@ -31,7 +31,7 @@ class SipSpeechPipeline:
                 wav.setframerate(8000)
                 wav.writeframes(pcm)
             segments, _info = self._model.transcribe(
-                item.name, vad_filter=True, beam_size=3)
+                item.name, vad_filter=True, beam_size=3, language=language)
             return " ".join(segment.text.strip() for segment in segments).strip()
 
     async def _to_pcm(self, mp3: bytes) -> bytes:
@@ -50,7 +50,12 @@ class SipSpeechPipeline:
         # A PBX/media test remains useful before Agents Platform is configured.
         if not settings.agents_platform_base:
             return b""
-        transcript = await asyncio.to_thread(self._transcribe_sync, pcm)
+        # SIP audio is narrow-band and short, which makes automatic language
+        # detection unstable (Portuguese was repeatedly classified as Arabic,
+        # Greek and Dutch).  Settings already carry the caller language, so
+        # use its ISO-639 prefix as Whisper's explicit language hint.
+        language = (settings.default_voice_lang or "").split("-", 1)[0].lower() or None
+        transcript = await asyncio.to_thread(self._transcribe_sync, pcm, language)
         if not transcript:
             return b""
         service = CallAgentService(settings)

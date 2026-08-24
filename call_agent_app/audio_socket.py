@@ -128,8 +128,22 @@ class AudioSocketBridge:
                                         await asyncio.wait_for(
                                             asyncio.shield(pending), timeout=0.5)
                                     except asyncio.TimeoutError:
-                                        writer.write(encode_frame(
-                                            KIND_PCM_8K, b"\x00\x00" * 160))
+                                        # Keep NAT and the media channel alive,
+                                        # and give a quiet audible cue so a
+                                        # human caller knows the agent is still
+                                        # processing instead of hanging up on
+                                        # an apparently dead line.
+                                        tick = int(asyncio.get_running_loop().time() * 2)
+                                        if tick % 4 == 0:
+                                            cue = array("h", (
+                                                int(900 * math.sin(2 * math.pi * 660 * i / 8000))
+                                                for i in range(160)))
+                                            if sys.byteorder != "little":
+                                                cue.byteswap()
+                                            keepalive = cue.tobytes()
+                                        else:
+                                            keepalive = b"\x00\x00" * 160
+                                        writer.write(encode_frame(KIND_PCM_8K, keepalive))
                                         await writer.drain()
                                 response = pending.result()
                                 for start in range(0, len(response), 320):

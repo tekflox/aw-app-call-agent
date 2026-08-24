@@ -88,7 +88,6 @@ class CallStore:
                    VALUES (?, ?, ?, 'active', ?)""",
                 (call_id, direction, remote_number, _now()),
             )
-            conn.execute("UPDATE calls SET status='active' WHERE id=?", (call_id,))
         return self.get(call_id)
 
     def start_recording(self, call_id: str) -> Path:

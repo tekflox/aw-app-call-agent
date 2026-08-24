@@ -475,6 +475,21 @@ def test_sip_pcmu_codec_detects_audible_audio():
     assert ulaw_peak(speech) > 5000
 
 
+def test_finished_call_is_not_reactivated_when_late_agent_text_arrives(tmp_path):
+    store = CallStore(tmp_path)
+    call_id = str(uuid.uuid4())
+    store.ensure_call(call_id)
+    store.finish(call_id)
+    # An agent response can finish just after the caller hangs up. Persisting
+    # that useful text must not turn the completed historical call active.
+    store.append_text(call_id, transcript="olá", agent_text="oi")
+    row = store.get(call_id)
+    assert row["status"] == "completed"
+    assert row["transcript"] == "olá"
+    assert row["agent_text"] == "oi"
+    store.close()
+
+
 def test_sip_integration_test_requires_internal_credentials():
     api = TestClient(build_routes(config_provider=lambda: CONFIG))
     response = api.post("/telephony/sip-integration-test", json={})
