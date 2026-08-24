@@ -118,7 +118,7 @@ class SipSoftphoneTester:
         self.sip.settimeout(8)
         self.rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rtp.bind(("127.0.0.1", 0))
-        self.rtp.settimeout(0.2)
+        self.rtp.settimeout(0.02)
         self.local_sip_port = self.sip.getsockname()[1]
         self.local_rtp_port = self.rtp.getsockname()[1]
         self.call_id = f"{uuid.uuid4()}@call-agent-test"
@@ -215,6 +215,12 @@ class SipSoftphoneTester:
         peak = 0
         deadline = time.monotonic() + response_timeout
         while time.monotonic() < deadline:
+            # Asterisk's AudioSocket application treats a silent RTP source
+            # as an inactive call. Keep the caller leg clocking while STT and
+            # the agent are thinking, exactly as a real softphone does.
+            header = struct.pack("!BBHII", 0x80, 0, seq, timestamp, ssrc)
+            self.rtp.sendto(header + (b"\xff" * 160), destination)
+            seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
             try:
                 packet, _source = self.rtp.recvfrom(2048)
             except socket.timeout:
