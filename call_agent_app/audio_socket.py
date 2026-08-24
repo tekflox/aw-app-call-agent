@@ -136,7 +136,14 @@ class AudioSocketBridge:
                                     chunk = response[start:start + 320]
                                     writer.write(encode_frame(KIND_PCM_8K, chunk))
                                     self.store.append_pcm(call_id, chunk)
-                                await writer.drain()
+                                    # AudioSocket frames are raw media, not a
+                                    # downloadable file.  Sending the whole
+                                    # reply in one TCP burst makes Asterisk
+                                    # emit a matching RTP burst which real
+                                    # softphone jitter buffers discard.  Pace
+                                    # 320-byte slin/8 kHz frames at 20 ms.
+                                    await writer.drain()
+                                    await asyncio.sleep(0.02)
                                 utterance.clear()
                                 speaking = False
                                 silence_ms = 0.0

@@ -220,6 +220,13 @@ class SipSoftphoneTester:
             self.rtp.sendto(header + frame, destination)
             seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
             time.sleep(0.02)
+        # Discard the immediate answer tone.  The integration test must prove
+        # that the agent's later TTS reply arrived, not merely that RTP works.
+        while True:
+            try:
+                self.rtp.recvfrom(2048)
+            except socket.timeout:
+                break
         received = bytearray()
         peak = 0
         deadline = time.monotonic() + response_timeout
