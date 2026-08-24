@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && make DESTDIR=/stage install \
     && test -f /stage/usr/lib/asterisk/modules/app_audiosocket.so \
     && test -f /stage/usr/lib/asterisk/modules/func_uuid.so
+RUN cd /src && make DESTDIR=/stage samples \
+    && test -f /stage/etc/asterisk/asterisk.conf \
+    && test -f /stage/etc/asterisk/modules.conf
 
 FROM python:3.11-slim-bookworm
 
