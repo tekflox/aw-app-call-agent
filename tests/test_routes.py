@@ -37,6 +37,7 @@ from call_agent_app.audio_socket import (  # noqa: E402
 )
 from call_agent_app.call_history import CallStore  # noqa: E402
 from call_agent_app.__main__ import build_standalone_app  # noqa: E402
+from call_agent_app.sip_tester import pcm16_to_ulaw, ulaw_peak  # noqa: E402
 
 CONFIG = {
     "agents_platform_base": "http://ap.test",
@@ -453,6 +454,20 @@ def test_tier2_container_serves_routes_at_proxy_relative_root(monkeypatch, tmp_p
         assert health.json()["ok"] is True
         test = client.post("/telephony/self-test")
         assert test.status_code == 202
+
+
+def test_sip_pcmu_codec_detects_audible_audio():
+    silence = pcm16_to_ulaw(b"\x00\x00" * 160)
+    speech = pcm16_to_ulaw(b"\x10\x27" * 160)
+    assert ulaw_peak(silence) < 500
+    assert ulaw_peak(speech) > 5000
+
+
+def test_sip_integration_test_requires_internal_credentials():
+    api = TestClient(build_routes(config_provider=lambda: CONFIG))
+    response = api.post("/telephony/sip-integration-test", json={})
+    assert response.status_code == 409
+    assert "SIP password" in response.json()["error"]
 
 
 def test_audio_socket_vad_sends_agent_pcm_back_to_caller():

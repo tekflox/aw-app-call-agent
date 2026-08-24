@@ -350,6 +350,7 @@ const HTML = `
 <details class="cag-history" data-el="historybox">
   <summary>Call history and recordings</summary>
   <button data-el="selftest">Run internal audio test</button>
+  <button data-el="siptest">Test SIP + agent</button>
   <div class="cag-history-list" data-el="history"><span class="cag-hint">No calls yet.</span></div>
 </details>
 <div class="cag-row">
@@ -385,6 +386,7 @@ export function mountCallUI(root, io) {
   const sipConfigBtn = el('sipconfig');
   const historyBox = el('historybox'), historyEl = el('history');
   const selfTestBtn = el('selftest');
+  const sipTestBtn = el('siptest');
   const agentQ = el('agentq'), agentList = el('agentlist'), pauseSel = el('pause');
   const langSel = el('lang');
 
@@ -650,6 +652,28 @@ export function mountCallUI(root, io) {
     } finally {
       selfTestBtn.disabled = false;
       selfTestBtn.textContent = 'Run internal audio test';
+    }
+  };
+
+  sipTestBtn.onclick = async () => {
+    sipTestBtn.disabled = true;
+    sipTestBtn.textContent = 'Testing SIP…';
+    add('sys', 'Calling extension 700 through the internal SIP softphone…');
+    try {
+      const resp = await io.fetch('/telephony/sip-integration-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Olá, diga apenas que o teste do Call Agent funcionou.' }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+      await loadCallHistory();
+      add('agent', body.agent_text || 'SIP, speech and agent response verified.');
+    } catch (e) {
+      add('err', 'SIP integration test failed: ' + e.message);
+    } finally {
+      sipTestBtn.disabled = false;
+      sipTestBtn.textContent = 'Test SIP + agent';
     }
   };
 

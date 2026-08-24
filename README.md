@@ -51,6 +51,7 @@ GET /api/apps/call-agent/panel/status    read-only diagnostics
 WS  /api/apps/call-agent/ws/call         the call
 GET /api/apps/call-agent/telephony/status          SIP + Asterisk readiness
 GET /api/apps/call-agent/telephony/config-preview  redacted Asterisk config
+POST /api/apps/call-agent/telephony/sip-integration-test  end-to-end internal SIP test
 POST /api/apps/call-agent/telephony/calls          originate a PSTN call
 POST /api/apps/call-agent/telephony/calls/hangup   hang up an Asterisk channel
 ```
@@ -150,6 +151,12 @@ recordings** and click **Run internal audio test**: the app sends a generated
 tone through its real loopback AudioSocket server, persists the WAV and loads
 it through the same player used by live calls. The normal browser **Call**
 button separately tests microphone transcription, agent dispatch and TTS.
+
+For the complete path, click **Test SIP + agent**. A tiny softphone built into
+the container registers extension 101, calls extension 700, sends a spoken TTS
+prompt over RTP/PCMU, and passes only after Asterisk, AudioSocket, speech
+recognition, Agents Platform and the audible RTP response all complete. The
+call and its playable recording are added to the same history.
 
 ## Development
 

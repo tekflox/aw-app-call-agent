@@ -38,6 +38,7 @@ from .audio_socket import KIND_HANGUP, KIND_PCM_8K, KIND_UUID, encode_frame
 from .call_history import CallStore
 from .panel import PANEL_HTML, STATUS_HTML
 from .service import CallAgentError, CallAgentService, CallSettings
+from .sip_tester import SipSoftphoneTester, SipTestError, mp3_to_pcm8k
 from .telephony import (
     AsteriskAMI, TelephonyError, from_config as telephony_from_config,
     render_asterisk_config,
@@ -52,6 +53,10 @@ class OutboundCall(BaseModel):
 
 class HangupCall(BaseModel):
     channel: str
+
+
+class SipIntegrationTestRequest(BaseModel):
+    text: str = "Olá, diga apenas que o teste do Call Agent funcionou."
 
 
 def build_routes(config_provider: Callable[[], dict] | None = None,
@@ -229,6 +234,59 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
                                 status_code=502)
         return {"ok": True, "call_id": call_id,
                 "message": "internal AudioSocket recording created"}
+
+    @app.post("/telephony/sip-integration-test")
+    async def sip_integration_test(request: SipIntegrationTestRequest):
+        """Call extension 700 through SIP and verify the agent answers in RTP.
+
+        This runs entirely inside the app container: no DID, trunk or external
+        VoIP provider is involved.  It exercises REGISTER -> INVITE -> RTP ->
+        Asterisk -> AudioSocket -> STT -> Agents Platform -> TTS -> RTP.
+        """
+        cfg = raw_config()
+        username = str(cfg.get("internal_sip_extension") or "101")
+        password = str(cfg.get("internal_sip_password") or "")
+        extension = str(cfg.get("call_agent_extension") or "700")
+        if not password:
+            return JSONResponse({"error": "internal SIP password is not configured"},
+                                status_code=409)
+        if not current().agents_platform_base:
+            return JSONResponse({"error": "Agents Platform is not configured"},
+                                status_code=409)
+        before = {row["id"] for row in call_store.list(20)} if call_store else set()
+        tester = SipSoftphoneTester(username, password, extension)
+        try:
+            mp3 = await CallAgentService(current()).tts(
+                request.text, current().default_voice_lang)
+            pcm = await asyncio.to_thread(mp3_to_pcm8k, mp3)
+            result = await asyncio.to_thread(tester.run, pcm)
+            call = None
+            if call_store:
+                for _ in range(100):
+                    fresh = [row for row in call_store.list(20)
+                             if row["id"] not in before]
+                    if fresh and fresh[0].get("agent_text"):
+                        call = fresh[0]
+                        break
+                    await asyncio.sleep(0.1)
+            if call_store and call is None:
+                raise SipTestError("RTP answered, but no completed agent turn was recorded")
+        except (SipTestError, CallAgentError) as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+        except Exception as exc:
+            log.exception("SIP integration test failed")
+            return JSONResponse({"ok": False, "error": f"SIP test failed: {exc}"},
+                                status_code=502)
+        finally:
+            tester.close()
+        return {
+            "ok": True,
+            "sip": dataclasses.asdict(result),
+            "call_id": call["id"] if call else "",
+            "transcript": call.get("transcript", "") if call else "",
+            "agent_text": call.get("agent_text", "") if call else "",
+            "message": "SIP, speech pipeline and agent response verified",
+        }
 
     @app.post("/telephony/calls", status_code=202)
     async def originate_call(call: OutboundCall):
