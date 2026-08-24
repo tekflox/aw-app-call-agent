@@ -13,8 +13,11 @@ container. O manifest publica SIP `5060/udp` e RTP `10000-10100/udp`.
 
 ## Teste interno sem provedor
 
-No Settings, informe o IP LAN do host do workspace. A app gera as senhas do
-ramal e do AMI automaticamente. No Linphone, registre o usuário mostrado em
+Em workspaces AW hospedados, deixe **Public SIP address** como `auto`: a app
+resolve o hostname público do próprio workspace e configura o NAT/SDP do
+Asterisk na inicialização. Em instalações self-hosted, informe o IP ou domínio
+público alcançável pelo telefone. A app gera as senhas do ramal e do AMI
+automaticamente. No softphone, registre o usuário mostrado em
 **Softphone extension** (padrão `101`) contra o IP LAN, porta UDP 5060, usando
 a senha do Settings. Disque **Call Agent extension** (padrão `700`). Nenhuma
 conta Zadarma ou número público participa desse caminho.

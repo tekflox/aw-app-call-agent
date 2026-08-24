@@ -327,6 +327,18 @@ def test_internal_extension_hides_password_unless_explicitly_revealed():
     assert shown["password"] == "local-phone-secret"
 
 
+def test_internal_extension_auto_address_uses_workspace_hostname(monkeypatch):
+    monkeypatch.setenv("AW_WORKSPACE_SLUG", "fresh-workspace")
+    cfg = dict(CONFIG, internal_sip_extension="101",
+               internal_sip_password="local-phone-secret",
+               call_agent_extension="700", sip_external_address="auto")
+    result = TestClient(build_routes(config_provider=lambda: cfg)).get(
+        "/telephony/internal-extension").json()
+    assert result["server"] == (
+        "call-agent.app.fresh-workspace.workspace.aw.tekflox.com"
+    )
+
+
 def test_ami_ping_and_originate_use_the_expected_protocol():
     async def scenario():
         actions = []

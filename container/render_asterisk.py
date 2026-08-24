@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import socket
 from pathlib import Path
 
 
@@ -23,9 +24,38 @@ for name, value in {"SIP password": password, "AMI secret": ami_secret}.items():
     if not re.fullmatch(r"[^\r\n]{12,200}", value):
         raise SystemExit(f"{name} must contain 12-200 characters without newlines")
 
+def resolve_external_address(value: str) -> str:
+    """Return an explicit address or discover this app's public IPv4.
+
+    Cloud workspaces have a deterministic per-app hostname.  Resolving it at
+    container start makes a brand-new install usable from an external
+    softphone without baking one workspace's IP into the image.  Self-hosted
+    installs can always override this with ``sip_external_address``.
+    """
+    if value and value.lower() != "auto":
+        return value
+    workspace_slug = env("AW_WORKSPACE_SLUG")
+    public_suffix = env("AW_WORKSPACE_PUBLIC_SUFFIX", "workspace.aw.tekflox.com")
+    if not workspace_slug:
+        return ""
+    hostname = f"call-agent.app.{workspace_slug}.{public_suffix}"
+    try:
+        return socket.gethostbyname(hostname)
+    except OSError:
+        return ""
+
+
+external_address = resolve_external_address(external_address)
 transport_extra = ""
 if external_address:
-    transport_extra = f"external_signaling_address={external_address}\nexternal_media_address={external_address}\n"
+    transport_extra = (
+        f"external_signaling_address={external_address}\n"
+        f"external_media_address={external_address}\n"
+        "local_net=127.0.0.0/8\n"
+        "local_net=10.0.0.0/8\n"
+        "local_net=172.16.0.0/12\n"
+        "local_net=192.168.0.0/16\n"
+    )
 
 pjsip = f"""[transport-udp]
 type=transport

@@ -24,6 +24,7 @@ import asyncio
 import dataclasses
 import logging
 import math
+import os
 import struct
 import uuid
 from pathlib import Path
@@ -170,8 +171,16 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
     async def internal_extension(reveal_password: bool = Query(False)) -> dict:
         cfg = raw_config()
         password = str(cfg.get("internal_sip_password") or "")
+        server = str(cfg.get("sip_external_address") or "")
+        if server.lower() in {"", "auto"}:
+            workspace_slug = os.environ.get("AW_WORKSPACE_SLUG", "").strip()
+            public_suffix = os.environ.get(
+                "AW_WORKSPACE_PUBLIC_SUFFIX", "workspace.aw.tekflox.com"
+            ).strip()
+            if workspace_slug:
+                server = f"call-agent.app.{workspace_slug}.{public_suffix}"
         return {
-            "server": str(cfg.get("sip_external_address") or ""),
+            "server": server,
             "port": 5060,
             "transport": "udp",
             "username": str(cfg.get("internal_sip_extension") or "101"),

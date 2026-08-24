@@ -202,9 +202,9 @@
       },
       "sip_external_address": {
         "type": "string",
-        "default": "",
-        "title": "Workspace LAN address",
-        "description": "IP ou dom\u00ednio alcan\u00e7\u00e1vel pelo iPhone; usado pelo Asterisk no SDP de m\u00eddia."
+        "default": "auto",
+        "title": "Public SIP address",
+        "description": "Use 'auto' to resolve this workspace's public Call Agent hostname, or enter the public IP/domain advertised by Asterisk in SIP and RTP."
       },
       "telephony_enabled": {
         "type": "boolean",
