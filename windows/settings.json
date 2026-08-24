@@ -6,7 +6,7 @@
       "widgets": [
         {
           "type": "markdown",
-          "value": "## Call Agent\nA call is a WebSocket carrying text: what you say is transcribed in the browser, sent to the agent below, and the reply is streamed back and spoken to you.\n\n**Agent** — pick one that answers in short spoken prose. A coding agent will narrate its tool calls at you.\n\n**Conversation** — every call resumes the same conversation, under the target `<agent>-<external id>`. Hit **new** in the call window to start a fresh one.\n\n**Credentials** — leave the agents-platform fields blank and this app inherits them from the Agents Platform Runners app. Fill them in only to call a different platform."
+          "value": "## Call Agent\nBrowser calls use WebSocket text; SIP calls use the app's own Asterisk, faster-whisper and Edge TTS.\n\n**Internal test** — set the Workspace LAN address, open **Linphone config** in the Call window, register ramal 101 and dial 700. The SIP and AMI passwords are generated automatically.\n\n**Agent** — pick one that answers in short spoken prose. Every call resumes the same Target conversation.\n\n**Agents Platform** — Tier-2 SIP calls need the base URL and identity token below; the container cannot read another app's private Settings.\n\n**External number** — leave telephony disabled for the internal test. Later, add the Zadarma SIP credentials and enable it."
         },
         {
           "type": "iframe",

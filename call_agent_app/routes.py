@@ -20,21 +20,43 @@ The WS keeps the wire protocol the monolith used verbatim
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
+import math
+import struct
+import uuid
+from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, Query, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from . import settings as settings_mod
+from .audio_socket import KIND_HANGUP, KIND_PCM_8K, KIND_UUID, encode_frame
+from .call_history import CallStore
 from .panel import PANEL_HTML, STATUS_HTML
 from .service import CallAgentError, CallAgentService, CallSettings
+from .telephony import (
+    AsteriskAMI, TelephonyError, from_config as telephony_from_config,
+    render_asterisk_config,
+)
 
 log = logging.getLogger("aw_apps.call_agent.routes")
 
 
-def build_routes(config_provider: Callable[[], dict] | None = None) -> FastAPI:
+class OutboundCall(BaseModel):
+    number: str
+
+
+class HangupCall(BaseModel):
+    channel: str
+
+
+def build_routes(config_provider: Callable[[], dict] | None = None,
+                 call_store: CallStore | None = None,
+                 audio_bridge_provider: Callable[[], object] | None = None) -> FastAPI:
     """Mode-agnostic factory.
 
     ``config_provider`` is read on **every** request rather than once at
@@ -52,6 +74,18 @@ def build_routes(config_provider: Callable[[], dict] | None = None) -> FastAPI:
             except Exception:
                 log.warning("config provider failed; using defaults", exc_info=True)
         return settings_mod.resolve(cfg)
+
+    def raw_config() -> dict:
+        if config_provider is None:
+            return {}
+        try:
+            return config_provider() or {}
+        except Exception:
+            log.warning("config provider failed; using defaults", exc_info=True)
+            return {}
+
+    def telephony():
+        return telephony_from_config(raw_config())
 
     @app.get("/health")
     async def health() -> dict:
@@ -79,7 +113,153 @@ def build_routes(config_provider: Callable[[], dict] | None = None) -> FastAPI:
             "credentials_source": s.source,
             "poll_interval_seconds": s.poll_interval_seconds,
             "max_poll_seconds": s.max_poll_seconds,
+            "telephony": {
+                "enabled": telephony().enabled,
+                "provider": telephony().provider,
+                "configured": telephony().configured,
+                "ready": telephony().ready,
+                "public_number": telephony().public_number,
+                "missing": telephony().missing(),
+            },
         }
+
+    @app.get("/telephony/status")
+    async def telephony_status() -> dict:
+        s = telephony()
+        body = {
+            "enabled": s.enabled,
+            "provider": s.provider,
+            "configured": s.configured,
+            "ready": s.ready,
+            "public_number": s.public_number,
+            "missing": s.missing(),
+            "asterisk": {"reachable": False},
+            "audio_bridge": {"listening": False, "active_calls": 0},
+        }
+        if audio_bridge_provider is not None:
+            bridge = audio_bridge_provider()
+            if bridge is not None:
+                body["audio_bridge"] = {
+                    "listening": bridge.server is not None,
+                    "host": bridge.host,
+                    "port": bridge.port,
+                    "active_calls": len(bridge.active),
+                }
+        if not s.enabled or not s.ami_secret:
+            return body
+        try:
+            reply = await AsteriskAMI(s).ping()
+            body["asterisk"] = {
+                "reachable": True,
+                "message": reply.get("ping") or reply.get("message") or "Pong",
+            }
+        except TelephonyError as exc:
+            body["asterisk"] = {"reachable": False, "error": str(exc)}
+        return body
+
+    @app.get("/telephony/config-preview")
+    async def telephony_config_preview() -> dict:
+        return {"files": render_asterisk_config(telephony(), redact=True)}
+
+    @app.get("/telephony/internal-extension")
+    async def internal_extension(reveal_password: bool = Query(False)) -> dict:
+        cfg = raw_config()
+        password = str(cfg.get("internal_sip_password") or "")
+        return {
+            "server": str(cfg.get("sip_external_address") or ""),
+            "port": 5060,
+            "transport": "udp",
+            "username": str(cfg.get("internal_sip_extension") or "101"),
+            "password": password if reveal_password else ("********" if password else ""),
+            "call_agent_extension": str(cfg.get("call_agent_extension") or "700"),
+            "codecs": ["PCMA/alaw", "PCMU/ulaw"],
+        }
+
+    @app.get("/telephony/calls")
+    async def call_history(limit: int = Query(100, ge=1, le=500)) -> dict:
+        return {"calls": call_store.list(limit) if call_store else []}
+
+    @app.get("/telephony/calls/{call_id}")
+    async def call_detail(call_id: str):
+        row = call_store.get(call_id) if call_store else None
+        if row is None:
+            return JSONResponse({"error": "call not found"}, status_code=404)
+        return row
+
+    @app.get("/telephony/calls/{call_id}/recording")
+    async def call_recording(call_id: str):
+        path = call_store.recording_path(call_id) if call_store else None
+        if path is None:
+            return JSONResponse({"error": "recording not found"}, status_code=404)
+        return FileResponse(Path(path), media_type="audio/wav",
+                            filename=f"call-{call_id}.wav")
+
+    @app.post("/telephony/self-test", status_code=202)
+    async def telephony_self_test():
+        """Send a synthetic call through the actual local AudioSocket path."""
+        bridge = audio_bridge_provider() if audio_bridge_provider else None
+        if bridge is None or bridge.server is None:
+            return JSONResponse({"error": "local audio bridge is not listening"},
+                                status_code=409)
+        if bridge.host not in {"127.0.0.1", "localhost", "::1"}:
+            return JSONResponse(
+                {"error": "self-test is allowed only on a loopback audio bridge"},
+                status_code=409)
+        call_id = str(uuid.uuid4())
+        try:
+            _reader, writer = await asyncio.open_connection(bridge.host, bridge.port)
+            samples = bytearray()
+            for index in range(8000):
+                value = int(3500 * math.sin(2 * math.pi * 440 * index / 8000))
+                samples.extend(struct.pack("<h", value))
+            writer.write(encode_frame(KIND_UUID, uuid.UUID(call_id).bytes))
+            writer.write(encode_frame(KIND_PCM_8K, bytes(samples)))
+            writer.write(encode_frame(KIND_HANGUP))
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            for _ in range(50):
+                row = call_store.get(call_id) if call_store else None
+                if row and row["status"] != "active":
+                    break
+                await asyncio.sleep(0.01)
+        except Exception as exc:
+            log.exception("internal AudioSocket self-test failed")
+            return JSONResponse({"error": f"internal self-test failed: {exc}"},
+                                status_code=502)
+        return {"ok": True, "call_id": call_id,
+                "message": "internal AudioSocket recording created"}
+
+    @app.post("/telephony/calls", status_code=202)
+    async def originate_call(call: OutboundCall):
+        s = telephony()
+        if not s.enabled:
+            return JSONResponse({"error": "telephony is disabled in Settings"}, status_code=409)
+        if not s.ready:
+            return JSONResponse({"error": "telephony is not configured", "missing": s.missing()}, status_code=409)
+        call_id = str(uuid.uuid4())
+        if call_store:
+            call_store.ensure_call(call_id, direction="outbound", remote_number=call.number)
+        try:
+            response = await AsteriskAMI(s).originate_call(
+                call.number, s.caller_id or s.public_number, call_id=call_id)
+        except TelephonyError as exc:
+            if call_store:
+                call_store.finish(call_id, status="failed", error=str(exc))
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return {"ok": True, "call_id": call_id,
+                "message": response.get("message", "originate queued")}
+
+    @app.post("/telephony/calls/hangup")
+    async def hangup_call(call: HangupCall):
+        s = telephony()
+        if not s.enabled:
+            return JSONResponse({"error": "telephony is disabled in Settings"}, status_code=409)
+        try:
+            response = await AsteriskAMI(s).hangup(call.channel)
+        except TelephonyError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return {"ok": True, "message": response.get("message", "hangup requested")}
 
     @app.get("/agents-list")
     async def agents_list() -> dict:

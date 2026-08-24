@@ -2,9 +2,9 @@
   "manifest_version": 1,
   "id": "call-agent",
   "name": "Call Agent",
-  "version": "0.10.1",
+  "version": "0.12.0",
   "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak \u2014 your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
-  "tier": "inprocess",
+  "tier": "container",
   "requires_ui_refresh": true,
   "category": "Runnables",
   "publisher": "TekFlox",
@@ -14,21 +14,65 @@
     "disk": "low"
   },
   "runtime": {
-    "python": ">=3.11",
-    "entrypoint": "call_agent_app.plugin:CallAgentAppPlugin",
-    "pip_requires": [
-      "httpx",
-      "edge-tts"
+    "image": "ghcr.io/tekflox/aw-app-call-agent:latest",
+    "port": 9412,
+    "resources": {
+      "cpus": 1,
+      "mem_mb": 1024
+    },
+    "publish": [
+      {
+        "container": 5060,
+        "host": 5060,
+        "protocol": "udp"
+      },
+      {
+        "container": "10000-10100",
+        "host": "10000-10100",
+        "protocol": "udp"
+      }
     ],
-    "standalone": {
-      "module": "call_agent_app",
-      "default_port": 9412
-    }
+    "env": {
+      "INTERNAL_SIP_EXTENSION": "${config.internal_sip_extension}",
+      "INTERNAL_SIP_PASSWORD": "${config.internal_sip_password}",
+      "CALL_AGENT_EXTENSION": "${config.call_agent_extension}",
+      "SIP_EXTERNAL_ADDRESS": "${config.sip_external_address}",
+      "ASTERISK_AMI_SECRET": "${config.asterisk_ami_secret}",
+      "ASTERISK_AMI_HOST": "127.0.0.1",
+      "ASTERISK_AUDIO_SOCKET_HOST": "127.0.0.1",
+      "ASTERISK_AUDIO_SOCKET_PORT": "9019",
+      "TELEPHONY_ENABLED": "${config.telephony_enabled}",
+      "SIP_HOST": "${config.sip_host}",
+      "SIP_PORT": "${config.sip_port}",
+      "SIP_USERNAME": "${config.sip_username}",
+      "SIP_PASSWORD": "${config.sip_password}",
+      "SIP_PUBLIC_NUMBER": "${config.sip_public_number}",
+      "SIP_CALLER_ID": "${config.sip_caller_id}",
+      "AW_AGENTS_PLATFORM_BASE": "${config.agents_platform_base}",
+      "AW_AGENTS_PLATFORM_TOKEN": "${config.agents_platform_token}",
+      "AW_CALL_AGENT_SLUG": "${config.agent_slug}",
+      "AW_CALL_EXTERNAL_ID": "${config.external_id}",
+      "AW_CALL_STT_MODEL": "${config.stt_model}",
+      "HF_HOME": "/app/data/models",
+      "AW_CALL_SPEECH_PAUSE_MS": "${config.speech_pause_ms}",
+      "AW_CALL_PROMPT_TEMPLATE": "${config.prompt_template}",
+      "AW_CALL_DEFAULT_VOICE_LANG": "${config.default_voice_lang}",
+      "AW_CALL_POLL_INTERVAL": "${config.poll_interval_seconds}",
+      "AW_CALL_MAX_POLL_SECONDS": "${config.max_poll_seconds}",
+      "AW_TIER2_CONTAINER": "1"
+    },
+    "volumes": [
+      {
+        "source": "$AW_APP_DATA",
+        "target": "/app/data",
+        "mode": "rw"
+      }
+    ]
   },
   "permissions": [
-    "routes:register",
-    "net:outbound",
+    "containers:manage",
     "fs:workspace-data",
+    "routes:register",
     "ui:code"
   ],
   "contributes": {
@@ -80,6 +124,12 @@
   "config_schema": {
     "type": "object",
     "properties": {
+      "auto_start": {
+        "type": "boolean",
+        "default": true,
+        "title": "Auto-start PBX",
+        "description": "Start the Call Agent and its built-in Asterisk automatically with the workspace."
+      },
       "agent_slug": {
         "type": "string",
         "default": "telegram-sonnet",
@@ -103,12 +153,12 @@
       "agents_platform_base": {
         "type": "string",
         "default": "",
-        "description": "Base URL of the agents-platform instance calls are dispatched to. Leave blank to inherit whatever the Agents Platform Runners app is already configured with."
+        "description": "Base URL of the Agents Platform instance. Required for SIP calls because the Tier-2 container cannot read another app's private config."
       },
       "agents_platform_token": {
         "type": "string",
         "x-secret": true,
-        "description": "Identity JWT sent as Authorization: Bearer to agents_platform_base. Leave blank to inherit the Agents Platform Runners app's token."
+        "description": "Identity JWT sent as Authorization: Bearer to agents_platform_base. Required for SIP calls."
       },
       "poll_interval_seconds": {
         "type": "number",
@@ -124,6 +174,112 @@
         "type": "number",
         "default": 2000,
         "description": "How long a pause has to be before the caller is treated as having finished speaking, in milliseconds. Raise it if you think between sentences and the call keeps cutting you off."
+      },
+      "stt_model": {
+        "type": "string",
+        "default": "base",
+        "title": "Server speech model",
+        "description": "faster-whisper model used for SIP calls. 'base' is the low-cost default; use 'small' for better Portuguese on a stronger host."
+      },
+      "internal_sip_extension": {
+        "type": "string",
+        "default": "101",
+        "title": "Softphone extension",
+        "description": "Ramal PJSIP usado pelo Linphone para o teste interno."
+      },
+      "internal_sip_password": {
+        "type": "string",
+        "x-secret": true,
+        "x-generate": "urlsafe32",
+        "title": "Softphone password",
+        "description": "Senha forte gerada automaticamente para o ramal interno."
+      },
+      "call_agent_extension": {
+        "type": "string",
+        "default": "700",
+        "title": "Call Agent extension",
+        "description": "Ramal que o softphone disca para falar com o Call Agent."
+      },
+      "sip_external_address": {
+        "type": "string",
+        "default": "",
+        "title": "Workspace LAN address",
+        "description": "IP ou domínio alcançável pelo iPhone; usado pelo Asterisk no SDP de mídia."
+      },
+      "telephony_enabled": {
+        "type": "boolean",
+        "default": false,
+        "title": "Enable SIP telephony",
+        "description": "Keep disabled until the SIP account, Portuguese number and Asterisk AMI secret are configured."
+      },
+      "sip_provider": {
+        "type": "string",
+        "default": "zadarma",
+        "title": "SIP provider"
+      },
+      "sip_host": {
+        "type": "string",
+        "default": "sip.zadarma.com",
+        "title": "SIP registrar"
+      },
+      "sip_port": {
+        "type": "integer",
+        "default": 5060,
+        "title": "SIP port"
+      },
+      "sip_username": {
+        "type": "string",
+        "default": "",
+        "title": "Zadarma SIP login"
+      },
+      "sip_password": {
+        "type": "string",
+        "x-secret": true,
+        "title": "Zadarma SIP password"
+      },
+      "sip_public_number": {
+        "type": "string",
+        "default": "",
+        "title": "Portuguese public number",
+        "description": "The assigned number in E.164 form, for example +351300000000."
+      },
+      "sip_caller_id": {
+        "type": "string",
+        "default": "",
+        "title": "Outbound caller ID",
+        "description": "Leave blank to use the public number. The provider must authorize this caller ID."
+      },
+      "asterisk_ami_host": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "title": "Asterisk AMI host"
+      },
+      "asterisk_ami_port": {
+        "type": "integer",
+        "default": 5038,
+        "title": "Asterisk AMI port"
+      },
+      "asterisk_ami_username": {
+        "type": "string",
+        "default": "call-agent",
+        "title": "Asterisk AMI username"
+      },
+      "asterisk_ami_secret": {
+        "type": "string",
+        "x-secret": true,
+        "x-generate": "urlsafe32",
+        "title": "Asterisk AMI secret",
+        "description": "A strong local secret used by this app to control Asterisk."
+      },
+      "asterisk_audio_socket_host": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "title": "AI audio bridge host"
+      },
+      "asterisk_audio_socket_port": {
+        "type": "integer",
+        "default": 9019,
+        "title": "AI audio bridge port"
       }
     },
     "required": []

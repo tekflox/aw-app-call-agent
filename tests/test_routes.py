@@ -8,8 +8,12 @@ compatibility contract this port inherited from the monolith.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import tempfile
+import uuid
+import wave
 from pathlib import Path
 
 import httpx
@@ -23,6 +27,16 @@ from call_agent_app.routes import build_routes  # noqa: E402
 from call_agent_app.service import (  # noqa: E402
     CallAgentService, CallSettings, pick_edge_voice, strip_markdown,
 )
+from call_agent_app.telephony import (  # noqa: E402
+    AsteriskAMI, TelephonyError, TelephonySettings, normalise_e164,
+    render_asterisk_config,
+)
+from call_agent_app.audio_socket import (  # noqa: E402
+    AudioSocketBridge, KIND_HANGUP, KIND_PCM_8K, KIND_UUID, encode_frame,
+    read_frame,
+)
+from call_agent_app.call_history import CallStore  # noqa: E402
+from call_agent_app.__main__ import build_standalone_app  # noqa: E402
 
 CONFIG = {
     "agents_platform_base": "http://ap.test",
@@ -201,6 +215,8 @@ def test_bundle_declared_in_the_manifest_exists_and_exports_both_entrypoints():
     assert "export function register(" in src
     assert "export function mountCallUI(" in src
     assert "export default register" in src
+    assert "/telephony/status" in src
+    assert "/telephony/calls" in src
 
     # The window body slot must be the one this app's window declares.
     window_ids = {w["id"] for w in manifest["contributes"]["windows"]}
@@ -242,3 +258,231 @@ def test_ws_set_agent_ignores_a_no_op(client):
 
 def test_settings_exposes_the_speech_pause(client):
     assert client.get("/settings").json()["speech_pause_ms"] == 2000.0
+
+
+# ---- SIP/Asterisk control plane -------------------------------------------
+
+def test_telephony_is_safe_and_disabled_by_default(client):
+    status = client.get("/telephony/status").json()
+    assert status["enabled"] is False
+    assert status["asterisk"]["reachable"] is False
+    resp = client.post("/telephony/calls", json={"number": "+351211234567"})
+    assert resp.status_code == 409
+    assert "disabled" in resp.json()["error"]
+
+
+def test_asterisk_preview_redacts_every_secret():
+    s = TelephonySettings(
+        enabled=True,
+        sip_username="10001",
+        sip_password="sip-super-secret",
+        public_number="+351300000000",
+        ami_secret="ami-super-secret",
+    )
+    files = render_asterisk_config(s, redact=True)
+    rendered = "\n".join(files.values())
+    assert "sip-super-secret" not in rendered
+    assert "ami-super-secret" not in rendered
+    assert "password=***" in rendered
+    assert "secret=***" in rendered
+    assert "AudioSocket(" in files["extensions.conf"]
+    assert "PJSIP/${EXTEN}@zadarma" in files["extensions.conf"]
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("+351 211 234 567", "+351211234567"),
+    ("+351(300)000-000", "+351300000000"),
+])
+def test_normalise_e164(raw, want):
+    assert normalise_e164(raw) == want
+
+
+@pytest.mark.parametrize("raw", ["", "351211234567", "+0123", "+351abc"])
+def test_normalise_e164_rejects_unsafe_or_ambiguous_numbers(raw):
+    with pytest.raises(TelephonyError):
+        normalise_e164(raw)
+
+
+def test_telephony_preview_route_never_leaks_secrets():
+    cfg = dict(CONFIG, telephony_enabled=True, sip_username="u",
+               sip_password="hidden-sip", sip_public_number="+351300000000",
+               asterisk_ami_secret="hidden-ami")
+    body = TestClient(build_routes(config_provider=lambda: cfg)).get(
+        "/telephony/config-preview").json()
+    assert "hidden-sip" not in json.dumps(body)
+    assert "hidden-ami" not in json.dumps(body)
+
+
+def test_internal_extension_hides_password_unless_explicitly_revealed():
+    cfg = dict(CONFIG, internal_sip_extension="101",
+               internal_sip_password="local-phone-secret",
+               call_agent_extension="700", sip_external_address="192.168.1.50")
+    api = TestClient(build_routes(config_provider=lambda: cfg))
+    hidden = api.get("/telephony/internal-extension").json()
+    assert hidden["password"] == "********"
+    assert hidden["server"] == "192.168.1.50"
+    shown = api.get(
+        "/telephony/internal-extension?reveal_password=true").json()
+    assert shown["password"] == "local-phone-secret"
+
+
+def test_ami_ping_and_originate_use_the_expected_protocol():
+    async def scenario():
+        actions = []
+
+        async def fake_ami(reader, writer):
+            writer.write(b"Asterisk Call Manager/5.0\r\n")
+            await writer.drain()
+            login = (await reader.readuntil(b"\r\n\r\n")).decode()
+            assert "Action: Login" in login
+            assert "Secret: local-secret" in login
+            writer.write(b"Response: Success\r\nMessage: Authentication accepted\r\n\r\n")
+            await writer.drain()
+            action = (await reader.readuntil(b"\r\n\r\n")).decode()
+            actions.append(action)
+            if "Action: Ping" in action:
+                writer.write(b"Response: Success\r\nPing: Pong\r\n\r\n")
+            else:
+                writer.write(b"Response: Success\r\nMessage: Originate successfully queued\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(fake_ami, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        settings = TelephonySettings(
+            enabled=True, sip_username="u", sip_password="p",
+            public_number="+351300000000", ami_port=port,
+            ami_secret="local-secret",
+        )
+        async with server:
+            ami = AsteriskAMI(settings)
+            assert (await ami.ping())["ping"] == "Pong"
+            await ami.originate("+351 211 234 567", "+351300000000")
+
+        assert "Action: Ping" in actions[0]
+        assert "Channel: Local/351211234567@call-agent-outbound" in actions[1]
+        assert "CallerID: +351300000000" in actions[1]
+
+    asyncio.run(scenario())
+
+
+def test_audio_socket_persists_a_playable_recording_and_history_route():
+    async def scenario(root):
+        store = CallStore(root)
+        bridge = AudioSocketBridge(store, port=0)
+        await bridge.start()
+        call_uuid = uuid.uuid4()
+        _reader, writer = await asyncio.open_connection("127.0.0.1", bridge.port)
+        pcm = (b"\x00\x00\x10\x00" * 800)  # 0.2s of valid little-endian PCM
+        writer.write(encode_frame(KIND_UUID, call_uuid.bytes))
+        writer.write(encode_frame(KIND_PCM_8K, pcm))
+        writer.write(encode_frame(KIND_HANGUP))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        for _ in range(50):
+            row = store.get(str(call_uuid))
+            if row and row["status"] != "active":
+                break
+            await asyncio.sleep(0.01)
+        await bridge.stop()
+        return store, str(call_uuid)
+
+    with tempfile.TemporaryDirectory() as root:
+        store, call_id = asyncio.run(scenario(root))
+        row = store.get(call_id)
+        assert row["status"] == "completed"
+        assert row["has_recording"] is True
+        assert row["duration_seconds"] == pytest.approx(0.2)
+        with wave.open(str(store.recording_path(call_id)), "rb") as recording:
+            assert recording.getframerate() == 8000
+            assert recording.getsampwidth() == 2
+            assert recording.getnchannels() == 1
+
+        api = TestClient(build_routes(config_provider=lambda: CONFIG, call_store=store))
+        history = api.get("/telephony/calls").json()["calls"]
+        assert history[0]["id"] == call_id
+        audio = api.get(f"/telephony/calls/{call_id}/recording")
+        assert audio.status_code == 200
+        assert audio.headers["content-type"].startswith("audio/wav")
+        assert audio.content.startswith(b"RIFF")
+        store.append_text(call_id, transcript="olá", agent_text="Olá!", run_id="run-1")
+        enriched = store.get(call_id)
+        assert enriched["transcript"] == "olá"
+        assert enriched["agent_text"] == "Olá!"
+        assert enriched["run_ids"] == ["run-1"]
+        store.close()
+
+
+def test_internal_self_test_uses_live_audio_socket_without_sip_credentials():
+    async def scenario(root):
+        store = CallStore(root)
+        bridge = AudioSocketBridge(store, port=0)
+        await bridge.start()
+        app = build_routes(
+            config_provider=lambda: CONFIG,
+            call_store=store,
+            audio_bridge_provider=lambda: bridge,
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/telephony/self-test")
+            assert response.status_code == 202
+            call_id = response.json()["call_id"]
+            recording = await client.get(f"/telephony/calls/{call_id}/recording")
+            assert recording.status_code == 200
+            assert recording.content.startswith(b"RIFF")
+        row = store.get(call_id)
+        assert row["status"] == "completed"
+        assert row["duration_seconds"] == pytest.approx(1.0)
+        await bridge.stop()
+        store.close()
+
+    with tempfile.TemporaryDirectory() as root:
+        asyncio.run(scenario(root))
+
+
+def test_tier2_container_serves_routes_at_proxy_relative_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("AW_TIER2_CONTAINER", "1")
+    monkeypatch.setenv("ASTERISK_AUDIO_SOCKET_PORT", "0")
+    monkeypatch.setenv("AW_CALL_AGENT_DATA", str(tmp_path))
+    with TestClient(build_standalone_app()) as client:
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["ok"] is True
+        test = client.post("/telephony/self-test")
+        assert test.status_code == 202
+
+
+def test_audio_socket_vad_sends_agent_pcm_back_to_caller():
+    async def scenario(root):
+        store = CallStore(root)
+        heard = []
+
+        async def respond(call_id, pcm):
+            heard.append((call_id, pcm))
+            return b"\x10\x00" * 160
+
+        bridge = AudioSocketBridge(store, port=0, utterance_handler=respond,
+                                   speech_pause_ms=20)
+        await bridge.start()
+        call_uuid = uuid.uuid4()
+        reader, writer = await asyncio.open_connection("127.0.0.1", bridge.port)
+        writer.write(encode_frame(KIND_UUID, call_uuid.bytes))
+        writer.write(encode_frame(KIND_PCM_8K, b"\xff\x3f" * 160))
+        writer.write(encode_frame(KIND_PCM_8K, b"\x00\x00" * 160))
+        await writer.drain()
+        kind, response = await asyncio.wait_for(read_frame(reader), 1)
+        assert kind == KIND_PCM_8K
+        assert response == b"\x10\x00" * 160
+        assert heard and heard[0][0] == str(call_uuid)
+        writer.write(encode_frame(KIND_HANGUP))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        await bridge.stop()
+        store.close()
+
+    with tempfile.TemporaryDirectory() as root:
+        asyncio.run(scenario(root))

@@ -243,7 +243,7 @@ const CSS = `
 .cag-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#161b22;
   border:1px solid #262d38;border-radius:10px;padding:8px 12px;flex:none}
 .cag-bar label{color:#8b949e;font-size:12px}
-.cag-root select,.cag-root input[type=text]{background:#0d1117;color:#e6edf3;border:1px solid #262d38;
+.cag-root select,.cag-root input[type=text],.cag-root input[type=tel]{background:#0d1117;color:#e6edf3;border:1px solid #262d38;
   border-radius:8px;padding:7px 9px;font:inherit;min-width:0}
 .cag-dot{width:9px;height:9px;border-radius:50%;background:#8b949e;flex:none}
 .cag-dot.on{background:#3fb950;box-shadow:0 0 8px #3fb950}
@@ -275,6 +275,17 @@ const CSS = `
   border:1px solid rgba(248,81,73,.35);font-size:13px}
 .cag-row{display:flex;gap:8px;flex:none}
 .cag-row input{flex:1}
+.cag-phonebar{display:flex;gap:8px;align-items:center;flex:none;background:#161b22;
+  border:1px solid #262d38;border-radius:10px;padding:8px 10px}
+.cag-phonebar input{flex:1}.cag-phone-status{font-size:12px;color:#8b949e;white-space:nowrap}
+.cag-phone-status.ok{color:#3fb950}.cag-phone-status.bad{color:#f85149}
+.cag-history{flex:none;background:#161b22;border:1px solid #262d38;border-radius:10px;
+  padding:7px 10px;max-height:190px;overflow:auto}
+.cag-history summary{cursor:pointer;color:#8b949e;user-select:none}
+.cag-history-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.cag-callrow{display:grid;grid-template-columns:minmax(120px,1fr) minmax(110px,1fr) auto auto;
+  gap:8px;align-items:center;padding:6px 8px;background:#0d1117;border-radius:8px;font-size:12px}
+.cag-callrow small{color:#8b949e}.cag-callrow audio{width:190px;height:30px}
 .cag-hint{color:#8b949e;font-size:12px;flex:none}
 .cag-combo{position:relative;min-width:190px}
 .cag-combo input{width:100%}
@@ -330,6 +341,17 @@ const HTML = `
   </div>
   <div class="cag-log" data-el="log"><div class="cag-msg sys">Not in a call.</div></div>
 </div>
+<div class="cag-phonebar">
+  <span class="cag-phone-status" data-el="phonestatus">SIP loading…</span>
+  <input data-el="phonenumber" type="tel" placeholder="+351…" autocomplete="tel" />
+  <button data-el="dial" disabled>${ICON.phone}Phone</button>
+  <button data-el="sipconfig">Linphone config</button>
+</div>
+<details class="cag-history" data-el="historybox">
+  <summary>Call history and recordings</summary>
+  <button data-el="selftest">Run internal audio test</button>
+  <div class="cag-history-list" data-el="history"><span class="cag-hint">No calls yet.</span></div>
+</details>
 <div class="cag-row">
   <button class="primary" data-el="call"></button>
   <input data-el="text" type="text" placeholder="…or type a message and press Enter" disabled />
@@ -359,6 +381,10 @@ export function mountCallUI(root, io) {
   const dot = el('dot'), stateEl = el('state'), logEl = el('log'), caption = el('caption');
   const callBtn = el('call'), sendBtn = el('send'), textIn = el('text');
   const speakBtn = el('speak'), clearBtn = el('clear');
+  const phoneStatus = el('phonestatus'), phoneNumber = el('phonenumber'), dialBtn = el('dial');
+  const sipConfigBtn = el('sipconfig');
+  const historyBox = el('historybox'), historyEl = el('history');
+  const selfTestBtn = el('selftest');
   const agentQ = el('agentq'), agentList = el('agentlist'), pauseSel = el('pause');
   const langSel = el('lang');
 
@@ -366,6 +392,8 @@ export function mountCallUI(root, io) {
   const meter = createMeter();
 
   let ws = null, inCall = false, speak = true, streaming = null, dead = false;
+  let telephonyReady = false;
+  const recordingUrls = new Set();
   // `streaming` holds the DOM node the reply is being written into, so it is
   // null from the moment a turn is sent until the FIRST token arrives, and
   // null again from `done` through the whole spoken reply. Using it as "is a
@@ -475,6 +503,155 @@ export function mountCallUI(root, io) {
     logEl.scrollTop = logEl.scrollHeight;
     return d;
   }
+
+  async function loadTelephonyStatus() {
+    try {
+      const resp = await io.fetch('/telephony/status');
+      const t = await resp.json();
+      telephonyReady = !!t.ready && !!(t.asterisk && t.asterisk.reachable)
+        && !!(t.audio_bridge && t.audio_bridge.listening);
+      if (!t.enabled) {
+        phoneStatus.textContent = 'SIP disabled';
+        phoneStatus.className = 'cag-phone-status';
+      } else if (!t.configured) {
+        phoneStatus.textContent = 'SIP needs credentials';
+        phoneStatus.className = 'cag-phone-status bad';
+      } else if (!(t.asterisk && t.asterisk.reachable)) {
+        phoneStatus.textContent = 'Asterisk offline';
+        phoneStatus.className = 'cag-phone-status bad';
+      } else if (!(t.audio_bridge && t.audio_bridge.listening)) {
+        phoneStatus.textContent = 'audio bridge offline';
+        phoneStatus.className = 'cag-phone-status bad';
+      } else {
+        phoneStatus.textContent = (t.public_number || 'SIP') + ' ready';
+        phoneStatus.className = 'cag-phone-status ok';
+      }
+      dialBtn.disabled = !telephonyReady;
+    } catch (e) {
+      phoneStatus.textContent = 'SIP status failed';
+      phoneStatus.className = 'cag-phone-status bad';
+      dialBtn.disabled = true;
+    }
+  }
+
+  async function dialPhone() {
+    const number = phoneNumber.value.trim();
+    if (!number || !telephonyReady) return;
+    dialBtn.disabled = true;
+    phoneStatus.textContent = 'dialing…';
+    phoneStatus.className = 'cag-phone-status';
+    try {
+      const resp = await io.fetch('/telephony/calls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ number }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+      phoneStatus.textContent = 'call queued';
+      phoneStatus.className = 'cag-phone-status ok';
+      add('sys', 'Phone call queued to ' + number + '.');
+    } catch (e) {
+      phoneStatus.textContent = 'call failed';
+      phoneStatus.className = 'cag-phone-status bad';
+      add('err', 'Could not start phone call: ' + e.message);
+    } finally {
+      dialBtn.disabled = !telephonyReady;
+    }
+  }
+
+  dialBtn.onclick = dialPhone;
+  phoneNumber.onkeydown = (e) => { if (e.key === 'Enter') dialPhone(); };
+
+  sipConfigBtn.onclick = async () => {
+    try {
+      const resp = await io.fetch('/telephony/internal-extension?reveal_password=true');
+      const s = await resp.json();
+      if (!resp.ok) throw new Error(s.error || `HTTP ${resp.status}`);
+      const value = `Server: ${s.server || '(set Workspace LAN address in Settings)'}\n`
+        + `Port: ${s.port} / ${s.transport.toUpperCase()}\nUsername: ${s.username}\n`
+        + `Password: ${s.password}\nDial: ${s.call_agent_extension}\n`
+        + `Codecs: ${(s.codecs || []).join(', ')}`;
+      window.prompt('Linphone configuration — copy these values', value);
+    } catch (e) {
+      add('err', 'Could not load Linphone configuration: ' + e.message);
+    }
+  };
+
+  async function playRecording(call, holder, button) {
+    button.disabled = true;
+    try {
+      const resp = await io.fetch(`/telephony/calls/${encodeURIComponent(call.id)}/recording`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const url = URL.createObjectURL(await resp.blob());
+      recordingUrls.add(url);
+      const audioEl = document.createElement('audio');
+      audioEl.controls = true;
+      audioEl.preload = 'metadata';
+      audioEl.src = url;
+      holder.replaceChildren(audioEl);
+      audioEl.play().catch(() => {});
+    } catch (e) {
+      button.disabled = false;
+      button.textContent = 'unavailable';
+    }
+  }
+
+  async function loadCallHistory() {
+    try {
+      const resp = await io.fetch('/telephony/calls?limit=100');
+      const body = await resp.json();
+      const calls = body.calls || [];
+      if (!calls.length) {
+        historyEl.innerHTML = '<span class="cag-hint">No calls yet.</span>';
+        return;
+      }
+      historyEl.innerHTML = '';
+      calls.forEach((call) => {
+        const row = document.createElement('div');
+        row.className = 'cag-callrow';
+        const when = document.createElement('span');
+        const d = new Date(call.started_at);
+        when.textContent = Number.isNaN(d.getTime()) ? call.started_at : d.toLocaleString();
+        const who = document.createElement('span');
+        who.textContent = (call.direction === 'outbound' ? '↗ ' : '↙ ')
+          + (call.remote_number || 'unknown number');
+        const meta = document.createElement('small');
+        meta.textContent = `${call.status} · ${Number(call.duration_seconds || 0).toFixed(1)}s`;
+        const player = document.createElement('span');
+        if (call.has_recording) {
+          const play = document.createElement('button');
+          play.textContent = 'Play';
+          play.onclick = () => playRecording(call, player, play);
+          player.appendChild(play);
+        } else {
+          player.textContent = 'no recording';
+        }
+        row.append(when, who, meta, player);
+        historyEl.appendChild(row);
+      });
+    } catch (e) {
+      historyEl.innerHTML = '<span class="cag-phone-status bad">Could not load call history.</span>';
+    }
+  }
+  historyBox.ontoggle = () => { if (historyBox.open) loadCallHistory(); };
+
+  selfTestBtn.onclick = async () => {
+    selfTestBtn.disabled = true;
+    selfTestBtn.textContent = 'Testing…';
+    try {
+      const resp = await io.fetch('/telephony/self-test', { method: 'POST' });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+      await loadCallHistory();
+      add('sys', 'Internal AudioSocket test passed. The new recording is ready below.');
+    } catch (e) {
+      add('err', 'Internal audio test failed: ' + e.message);
+    } finally {
+      selfTestBtn.disabled = false;
+      selfTestBtn.textContent = 'Run internal audio test';
+    }
+  };
 
   // ---- audio out --------------------------------------------------------
   // Fetched through io.fetch (not assigned straight to audio.src) for two
@@ -984,11 +1161,13 @@ export function mountCallUI(root, io) {
       });
     })
     .catch((e) => add('err', 'Could not load settings: ' + e.message));
+  loadTelephonyStatus();
 
   return {
     destroy() {
       dead = true;
       if (levelTimer) clearInterval(levelTimer);
+      recordingUrls.forEach((url) => URL.revokeObjectURL(url));
       try { if (ws) ws.close(); } catch (e) {}
       stopMic();
       try { audio.pause(); } catch (e) {}

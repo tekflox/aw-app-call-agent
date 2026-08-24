@@ -104,8 +104,23 @@ STATUS_HTML = r"""<!doctype html>
         + row('Credentials from', '<code>' + s.credentials_source + '</code>')
         + row('Turn timeout', s.max_poll_seconds + 's (polled every '
               + s.poll_interval_seconds + 's)');
+      var tel = s.telephony || {};
+      html += row('SIP telephony', tel.enabled ? 'enabled' : 'disabled', tel.enabled ? 'ok' : '')
+        + row('SIP provider', '<code>' + (tel.provider || 'zadarma') + '</code>')
+        + row('Portuguese number', tel.public_number || 'not set', tel.public_number ? '' : 'bad')
+        + row('SIP credentials', tel.configured ? 'present' : 'missing: ' + (tel.missing || []).join(', '),
+              tel.configured ? 'ok' : 'bad');
       document.getElementById('t').innerHTML = html
-        + row('Platform reachable', '<span id="reach">checking…</span>');
+        + row('Platform reachable', '<span id="reach">checking…</span>')
+        + row('Asterisk', '<span id="ast">checking…</span>');
+      fetch(BASE + '/telephony/status', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (t) {
+          var el = document.getElementById('ast');
+          var ok = !!(t.asterisk && t.asterisk.reachable);
+          el.textContent = ok ? 'reachable' : (t.enabled ? 'not reachable' : 'disabled');
+          el.className = ok ? 'ok' : (t.enabled ? 'bad' : '');
+        });
       return fetch(BASE + '/agents-list', { credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (a) {

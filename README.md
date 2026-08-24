@@ -49,6 +49,10 @@ GET /api/apps/call-agent/tts?text=&lang= raw MP3 (audio/mpeg)
 GET /api/apps/call-agent/panel           the browser call UI
 GET /api/apps/call-agent/panel/status    read-only diagnostics
 WS  /api/apps/call-agent/ws/call         the call
+GET /api/apps/call-agent/telephony/status          SIP + Asterisk readiness
+GET /api/apps/call-agent/telephony/config-preview  redacted Asterisk config
+POST /api/apps/call-agent/telephony/calls          originate a PSTN call
+POST /api/apps/call-agent/telephony/calls/hangup   hang up an Asterisk channel
 ```
 
 The protocol and the failure playbook live in
@@ -115,6 +119,37 @@ blank one is diagnosable without reading a log.
 
 Pick an agent that answers in short spoken prose — a coding agent will narrate
 its tool calls at you.
+
+## SIP telephony (Zadarma + Asterisk)
+
+Telephony is built into this app's control plane but is deliberately disabled
+by default. Configure the Zadarma SIP login/password, the Portuguese number in
+E.164 form, and a local Asterisk AMI secret in Settings; only then enable
+`telephony_enabled`. The call window's **Phone** button remains disabled until
+both the settings and a live AMI ping pass.
+
+`GET /telephony/config-preview` renders the exact minimal `pjsip.conf`,
+`extensions.conf` and `manager.conf` the deployment needs, with both SIP and
+AMI secrets redacted. Incoming calls enter `AudioSocket` on port 9019; outgoing
+calls are queued through AMI into the `call-agent-outbound` context.
+
+Version 0.12 runs as a Tier-2 container with Asterisk in the same app image.
+The manifest publishes `5060/udp` and `10000-10100/udp`; the workspace runtime
+expands those bindings while keeping the HTTP UI/API on its authenticated
+reverse proxy. Settings are projected into the container environment and a
+save recreates the container, so ramals, generated passwords, LAN address and
+the optional Zadarma trunk are deployed by the app rather than copied by hand.
+
+The full setup and call path are documented in
+[`docs/ZADARMA_ASTERISK.md`](docs/ZADARMA_ASTERISK.md). Call metadata and WAV
+recordings are durable under `.aw-workspace/data/call-agent/`; the Call window
+lists them and loads protected audio into an inline player on demand.
+
+No provider is required for a first test. Expand **Call history and
+recordings** and click **Run internal audio test**: the app sends a generated
+tone through its real loopback AudioSocket server, persists the WAV and loads
+it through the same player used by live calls. The normal browser **Call**
+button separately tests microphone transcription, agent dispatch and TTS.
 
 ## Development
 

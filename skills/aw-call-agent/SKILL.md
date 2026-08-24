@@ -147,3 +147,24 @@ tool calls at you and the call becomes unlistenable. If the agent expects a
 skill slash-command, put it on the first line of `prompt_template` — the
 template's `${text}` is replaced with what the caller said, and a template
 missing the placeholder gets the caller's words appended rather than dropped.
+
+## SIP / PSTN control plane
+
+The app owns the Zadarma/Asterisk control plane as well as the browser call.
+Telephony is off by default. Settings holds the SIP registrar/login, secret,
+Portuguese E.164 number and local AMI credentials. The phone dialer is enabled
+only when `/telephony/status` says the config is complete **and** AMI answers a
+Ping.
+
+The generated Asterisk configuration is available at
+`GET /api/apps/call-agent/telephony/config-preview`; it always redacts the SIP
+password and AMI secret. Incoming calls route to `AudioSocket` on port 9019,
+and outgoing calls use AMI Originate through `call-agent-outbound`. Never
+enable the trunk with placeholder credentials, and never expose AMI beyond a
+trusted private interface.
+
+Current deployment boundary: aw-workspace's container runtime publishes one
+HTTP/TCP port only, not UDP 5060 plus an RTP range. Asterisk therefore lives on
+a SIP-reachable host/VPS until the runtime gains UDP/range or host-network
+support. Do not claim that putting Asterisk in the existing Tier-2 manifest
+would make PSTN media reachable; it would not.

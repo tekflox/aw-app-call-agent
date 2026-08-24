@@ -17,6 +17,7 @@ there is no workspace config to read — see ``settings.py``.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -24,6 +25,10 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from .call_history import CallStore, default_data_dir
+from .audio_socket import AudioSocketBridge
+from .speech_pipeline import SipSpeechPipeline
+from . import settings as settings_mod
 from .routes import build_routes
 
 SLUG = "call-agent"
@@ -32,16 +37,73 @@ PANEL = f"/api/apps/{SLUG}/panel"
 UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 
+def _container_config() -> dict:
+    """Rehydrate the manifest-provided environment for the route layer."""
+    mapping = {
+        "agent_slug": "AW_CALL_AGENT_SLUG",
+        "external_id": "AW_CALL_EXTERNAL_ID",
+        "prompt_template": "AW_CALL_PROMPT_TEMPLATE",
+        "default_voice_lang": "AW_CALL_DEFAULT_VOICE_LANG",
+        "speech_pause_ms": "AW_CALL_SPEECH_PAUSE_MS",
+        "poll_interval_seconds": "AW_CALL_POLL_INTERVAL",
+        "max_poll_seconds": "AW_CALL_MAX_POLL_SECONDS",
+        "agents_platform_base": "AW_AGENTS_PLATFORM_BASE",
+        "agents_platform_token": "AW_AGENTS_PLATFORM_TOKEN",
+        "sip_host": "SIP_HOST",
+        "sip_port": "SIP_PORT",
+        "sip_username": "SIP_USERNAME",
+        "sip_password": "SIP_PASSWORD",
+        "sip_public_number": "SIP_PUBLIC_NUMBER",
+        "sip_caller_id": "SIP_CALLER_ID",
+        "asterisk_ami_host": "ASTERISK_AMI_HOST",
+        "asterisk_ami_secret": "ASTERISK_AMI_SECRET",
+        "asterisk_audio_socket_host": "ASTERISK_AUDIO_SOCKET_HOST",
+        "asterisk_audio_socket_port": "ASTERISK_AUDIO_SOCKET_PORT",
+        "internal_sip_extension": "INTERNAL_SIP_EXTENSION",
+        "internal_sip_password": "INTERNAL_SIP_PASSWORD",
+        "call_agent_extension": "CALL_AGENT_EXTENSION",
+        "sip_external_address": "SIP_EXTERNAL_ADDRESS",
+    }
+    cfg = {key: os.environ[name] for key, name in mapping.items()
+           if os.environ.get(name) not in (None, "")}
+    cfg["telephony_enabled"] = os.environ.get(
+        "TELEPHONY_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+    return cfg
+
+
 def build_standalone_app() -> FastAPI:
-    app = FastAPI(title="call-agent (standalone)")
+    store = CallStore(default_data_dir())
+    pipeline = SipSpeechPipeline(lambda: settings_mod.resolve(_container_config()), store)
+    bridge = AudioSocketBridge(
+        store,
+        host=os.environ.get("ASTERISK_AUDIO_SOCKET_HOST", "127.0.0.1"),
+        port=int(os.environ.get("ASTERISK_AUDIO_SOCKET_PORT", "9019")),
+        utterance_handler=pipeline.handle,
+        speech_pause_ms=int(float(os.environ.get("AW_CALL_SPEECH_PAUSE_MS", "1200"))),
+        call_finished=pipeline.forget,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        await bridge.start()
+        try:
+            yield
+        finally:
+            await bridge.stop()
+            store.close()
+
+    app = FastAPI(title="call-agent (standalone)", lifespan=lifespan)
     # Integrated mode gets ``/api/apps/<slug>/ui/<file>`` from core, and an app
     # may not mount routes there itself (core reserves the prefix and would
     # refuse the whole sub-app). Standalone has no core, so serve it here —
     # BEFORE the sub-app mount, since Starlette matches mounts in order and
     # the shorter prefix would otherwise swallow it.
-    if UI_DIST.is_dir():
+    tier2 = os.environ.get("AW_TIER2_CONTAINER") == "1"
+    if UI_DIST.is_dir() and not tier2:
         app.mount(f"/api/apps/{SLUG}/ui", StaticFiles(directory=UI_DIST), name="ui")
-    app.mount(f"/api/apps/{SLUG}", build_routes())
+    routes = build_routes(config_provider=_container_config, call_store=store,
+                          audio_bridge_provider=lambda: bridge)
+    app.mount("/" if tier2 else f"/api/apps/{SLUG}", routes)
 
     @app.get("/")
     async def index() -> RedirectResponse:
