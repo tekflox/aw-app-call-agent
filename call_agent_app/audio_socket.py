@@ -116,7 +116,22 @@ class AudioSocketBridge:
                             utterance.extend(payload)
                             silence_ms += frame_ms
                             if silence_ms >= self.speech_pause_ms:
-                                response = await self.utterance_handler(call_id, bytes(utterance))
+                                # AudioSocket closes a call after roughly two
+                                # seconds with no traffic in either direction.
+                                # STT + an agent run routinely take longer, so
+                                # feed quiet PCM while the response is being
+                                # prepared to keep the media channel alive.
+                                pending = asyncio.create_task(
+                                    self.utterance_handler(call_id, bytes(utterance)))
+                                while not pending.done():
+                                    try:
+                                        await asyncio.wait_for(
+                                            asyncio.shield(pending), timeout=0.5)
+                                    except asyncio.TimeoutError:
+                                        writer.write(encode_frame(
+                                            KIND_PCM_8K, b"\x00\x00" * 160))
+                                        await writer.drain()
+                                response = pending.result()
                                 for start in range(0, len(response), 320):
                                     chunk = response[start:start + 320]
                                     writer.write(encode_frame(KIND_PCM_8K, chunk))
