@@ -11,18 +11,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 APP_ID = "call-agent"
-DEFAULT_WORKSPACE_CONTAINER_DIR = "/opt/aw-workspace"
 
 
 def default_data_dir() -> Path:
     explicit = os.environ.get("AW_CALL_AGENT_DATA")
     if explicit:
         return Path(explicit)
-    home = os.environ.get("AW_WORKSPACE_HOME") or os.path.join(
-        os.environ.get("AW_WORKSPACE_CONTAINER_DIR", DEFAULT_WORKSPACE_CONTAINER_DIR),
-        ".aw-workspace",
-    )
-    return Path(home) / "data" / APP_ID
+    workspace_home = os.environ.get("AW_WORKSPACE_HOME")
+    if workspace_home:
+        return Path(workspace_home) / "data" / APP_ID
+    workspace_dir = os.environ.get("AW_WORKSPACE_CONTAINER_DIR")
+    if workspace_dir:
+        return Path(workspace_dir) / ".aw-workspace" / "data" / APP_ID
+    # Standalone/CI runs are not necessarily inside /opt/aw-workspace (and a
+    # shared runner may deliberately make that path read-only). The Tier-2
+    # image always sets AW_CALL_AGENT_DATA=/app/data, so this fallback is only
+    # for direct `python -m call_agent_app` usage and test collection.
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data) if xdg_data else Path.home() / ".local" / "share"
+    return base / "aw-call-agent"
 
 
 def _now() -> str:
