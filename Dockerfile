@@ -25,7 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxml2 libuuid1 libncurses6 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=asterisk-build /stage/ /
+COPY --from=asterisk-build /stage/usr/ /usr/
+COPY --from=asterisk-build /stage/etc/asterisk/ /etc/asterisk/
+COPY --from=asterisk-build /stage/var/lib/asterisk/ /var/lib/asterisk/
+COPY --from=asterisk-build /stage/var/spool/asterisk/ /var/spool/asterisk/
 
 WORKDIR /app
 COPY requirements.txt .
