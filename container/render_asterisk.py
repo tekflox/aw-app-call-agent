@@ -38,7 +38,7 @@ auth_type=userpass
 username={extension}
 password={password}
 
-[{extension}-aor]
+[{extension}]
 type=aor
 max_contacts=2
 remove_existing=yes
@@ -50,7 +50,7 @@ context=internal
 disallow=all
 allow=alaw,ulaw
 auth={extension}-auth
-aors={extension}-aor
+aors={extension}
 direct_media=no
 rtp_symmetric=yes
 force_rport=yes
