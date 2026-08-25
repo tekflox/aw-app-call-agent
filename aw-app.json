@@ -123,6 +123,29 @@
         "description": "How the Call Agent app turns a voice call into an Agents Platform run \u2014 the WS protocol, the TTS endpoint, session continuity, and what to check when a call stalls."
       }
     ],
+    "agents": {
+      "agents": [
+        {
+          "slug": "call-agent-openai",
+          "name": "Call Agent – OpenAI",
+          "description": "Low-latency phone agent backed by an OpenAI direct API model.",
+          "system_prompt_file": "prompts/call-agent-openai.md",
+          "model_slug": "openai-gpt-5-6-luna",
+          "capabilities": "Answers Call Agent phone conversations in short, natural spoken turns with low latency.",
+          "use_cases": [
+            "answer a Call Agent phone call",
+            "low-latency spoken conversation",
+            "short voice replies through OpenAI API"
+          ],
+          "hidden_from_flow": false,
+          "icon": "phone",
+          "color": "#10b981",
+          "params": {
+            "max_tokens": 220
+          }
+        }
+      ]
+    },
     "frontend": {
       "mode": "component",
       "bundle": "ui/dist/call-agent.js",
@@ -142,8 +165,9 @@
       },
       "agent_slug": {
         "type": "string",
-        "default": "telegram-sonnet",
-        "description": "Agents Platform agent slug a call is routed to. Pick one that answers in short spoken prose \u2014 a coding agent will narrate tool calls at you."
+        "default": "call-agent-openai",
+        "title": "Agent answering calls",
+        "description": "Agents Platform agent slug that answers the call. The app installs call-agent-openai as the low-latency default; you can select another agent from the Call window."
       },
       "external_id": {
         "type": "string",

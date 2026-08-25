@@ -101,7 +101,7 @@ class CallSettings:
 
     agents_platform_base: str = ""
     agents_platform_token: str = ""
-    agent_slug: str = "telegram-sonnet"
+    agent_slug: str = "call-agent-openai"
     external_id: str = "aw-call-shared"
     prompt_template: str = (
         "CONTEXT:\n- source: streaming_call\n- surface: voice\n"
