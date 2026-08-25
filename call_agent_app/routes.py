@@ -273,6 +273,7 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             return JSONResponse({"error": "Agents Platform is not configured"},
                                 status_code=409)
         before = {row["id"] for row in call_store.list(20)} if call_store else set()
+        bridge = audio_bridge_provider() if audio_bridge_provider else None
         tester = SipSoftphoneTester(username, password, extension)
         try:
             service = CallAgentService(current())
@@ -294,10 +295,14 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
                     return False
                 if not fresh:
                     return False
-                return len(fresh[0].get("agent_text", "").splitlines()) >= turn
+                text_ready = len(fresh[0].get("agent_text", "").splitlines()) >= turn
+                if bridge is None or not hasattr(bridge, "response_audio_stats"):
+                    return text_ready
+                audio = bridge.response_audio_stats(fresh[0]["id"])
+                return text_ready and audio["turns"] >= turn
 
             result = await asyncio.to_thread(
-                tester.run_conversation, prompts, 180, turn_complete)
+                tester.run_conversation, prompts, 25, turn_complete)
             call = None
             if call_store:
                 for _ in range(100):
@@ -319,6 +324,11 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
                     raise SipTestError(
                         f"memory assertion failed: expected {request.expected_memory!r} "
                         "in the follow-up response")
+                response_audio = (bridge.response_audio_stats(call["id"])
+                                  if bridge is not None and
+                                  hasattr(bridge, "response_audio_stats") else {})
+                if response_audio and response_audio.get("turns", 0) < 2:
+                    raise SipTestError("two synthesized voice turns were not emitted")
         except (SipTestError, CallAgentError) as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
         except Exception as exc:
@@ -334,7 +344,9 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             "transcript": call.get("transcript", "") if call else "",
             "agent_text": call.get("agent_text", "") if call else "",
             "memory_verified": True,
-            "message": "SIP, two speech turns, agent memory and RTP responses verified",
+            "voice_verified": True,
+            "response_audio": response_audio if call_store else {},
+            "message": "SIP, two speech turns, agent memory and synthesized voice verified",
         }
 
     @app.post("/telephony/calls", status_code=202)

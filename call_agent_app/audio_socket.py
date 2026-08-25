@@ -71,6 +71,15 @@ class AudioSocketBridge:
         self.audio_observer = audio_observer
         self.speech_pause_ms = speech_pause_ms
         self.call_finished = call_finished
+        # Durable-enough, process-local evidence for the live SIP self-test.
+        # A turn is counted only after synthesized PCM has been fully written
+        # to Asterisk's AudioSocket connection.
+        self._response_audio: dict[str, dict[str, int]] = {}
+
+    def response_audio_stats(self, call_id: str) -> dict[str, int]:
+        return dict(self._response_audio.get(call_id, {
+            "turns": 0, "bytes": 0, "peak": 0,
+        }))
 
     async def start(self):
         if self.server is not None:
@@ -106,6 +115,11 @@ class AudioSocketBridge:
                     self.store.ensure_call(call_id)
                     self.store.start_recording(call_id)
                     self.active.add(call_id)
+                    self._response_audio[call_id] = {"turns": 0, "bytes": 0, "peak": 0}
+                    if len(self._response_audio) > 100:
+                        oldest = next(iter(self._response_audio))
+                        if oldest != call_id:
+                            self._response_audio.pop(oldest, None)
                     if self.audio_observer is not None:
                         await self.audio_observer.start_call(call_id)
                 elif kind == KIND_PCM_8K:
@@ -144,9 +158,11 @@ class AudioSocketBridge:
 
                                 loop = asyncio.get_running_loop()
                                 deadline = None
+                                emitted_bytes = 0
+                                emitted_peak = 0
 
                                 async def emit(response: bytes):
-                                    nonlocal deadline
+                                    nonlocal deadline, emitted_bytes, emitted_peak
                                     if deadline is None or deadline < loop.time() - 0.1:
                                         deadline = loop.time()
                                     for start in range(0, len(response), 320):
@@ -154,6 +170,16 @@ class AudioSocketBridge:
                                         writer.write(encode_frame(KIND_PCM_8K, chunk))
                                         self.store.append_pcm(call_id, chunk)
                                         await writer.drain()
+                                        emitted_bytes += len(chunk)
+                                        if chunk:
+                                            samples = array("h")
+                                            samples.frombytes(chunk[:len(chunk) - len(chunk) % 2])
+                                            if sys.byteorder != "little":
+                                                samples.byteswap()
+                                            emitted_peak = max(
+                                                emitted_peak,
+                                                max((abs(value) for value in samples), default=0),
+                                            )
                                         deadline += 0.02
                                         await asyncio.sleep(max(0, deadline - loop.time()))
 
@@ -188,6 +214,11 @@ class AudioSocketBridge:
                                 response = pending.result()
                                 if response:
                                     await emit(response)
+                                if emitted_bytes:
+                                    stats = self._response_audio[call_id]
+                                    stats["turns"] += 1
+                                    stats["bytes"] += emitted_bytes
+                                    stats["peak"] = max(stats["peak"], emitted_peak)
                                 utterance.clear()
                                 speaking = False
                                 silence_ms = 0.0

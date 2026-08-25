@@ -725,6 +725,13 @@ def test_audio_socket_vad_sends_agent_pcm_back_to_caller():
         assert kind == KIND_PCM_8K
         assert response == b"\x10\x00" * 160
         assert heard and heard[0][0] == str(call_uuid)
+        for _ in range(20):
+            if bridge.response_audio_stats(str(call_uuid))["turns"]:
+                break
+            await asyncio.sleep(0.01)
+        assert bridge.response_audio_stats(str(call_uuid)) == {
+            "turns": 1, "bytes": 320, "peak": 16,
+        }
         writer.write(encode_frame(KIND_HANGUP))
         await writer.drain()
         writer.close()
