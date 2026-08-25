@@ -76,6 +76,7 @@
     ]
   },
   "permissions": [
+    "agents:contribute",
     "containers:manage",
     "fs:workspace-data",
     "routes:register",
