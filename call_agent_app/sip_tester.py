@@ -259,11 +259,15 @@ class SipSoftphoneTester:
                     turn_received.extend(audio)
                     turn_peak = max(turn_peak, ulaw_peak(audio))
                 recorded = turn_complete(turn) if turn_complete else True
-                if recorded and turn_peak >= 500 and len(turn_received) >= 1600:
+                # ``agent_text`` is persisted only after TTS conversion and
+                # the complete PCM emit to AudioSocket. Pair that durable
+                # signal with actual RTP reception; an amplitude threshold is
+                # codec/voice dependent and made quiet valid voices hang.
+                if recorded and len(turn_received) >= 160:
                     break
             if not (turn_complete(turn) if turn_complete else True):
                 raise SipTestError(f"agent turn {turn} was not recorded")
-            if turn_peak < 500:
+            if not turn_received:
                 raise SipTestError(
                     f"no audible RTP response for turn {turn} "
                     f"(received={len(turn_received)} bytes, peak={turn_peak})")
