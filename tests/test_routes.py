@@ -648,6 +648,24 @@ def test_openai_realtime_reconnects_for_follow_up(monkeypatch, tmp_path):
     store.close()
 
 
+def test_sip_pipeline_includes_call_history_for_api_agent_memory(tmp_path):
+    settings = CallSettings()
+    store = CallStore(tmp_path)
+    pipeline = SipSpeechPipeline(lambda: settings, store)
+    first = pipeline._prompt_for_turn("memory-call", "Eu gosto de abacaxi.", settings)
+    assert "CONVERSATION_SO_FAR" not in first
+    pipeline._history["memory-call"] = [
+        ("Eu gosto de abacaxi.", "Que bom! Abacaxi é delicioso.")]
+    follow_up = pipeline._prompt_for_turn(
+        "memory-call", "Que fruta eu gosto?", settings)
+    assert "USER: Eu gosto de abacaxi." in follow_up
+    assert "ASSISTANT: Que bom! Abacaxi é delicioso." in follow_up
+    assert "CURRENT_USER_MESSAGE:\nQue fruta eu gosto?" in follow_up
+    pipeline.forget("memory-call")
+    assert "memory-call" not in pipeline._history
+    store.close()
+
+
 def test_openai_tts_returns_mp3_bytes(monkeypatch):
     captured = {}
 

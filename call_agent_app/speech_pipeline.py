@@ -139,6 +139,21 @@ class SipSpeechPipeline:
         self._model = None
         self._sessions: dict[str, str | None] = {}
         self._realtime: dict[str, OpenAIRealtimeTranscriber] = {}
+        self._history: dict[str, list[tuple[str, str]]] = {}
+
+    def _prompt_for_turn(self, call_id: str, transcript: str, settings) -> str:
+        history = self._history.get(call_id, [])
+        if not history:
+            return settings.build_prompt(transcript)
+        conversation = "\n".join(
+            f"USER: {user}\nASSISTANT: {assistant}"
+            for user, assistant in history[-8:])
+        return settings.build_prompt(
+            "CONVERSATION_SO_FAR:\n"
+            f"{conversation}\n"
+            "CURRENT_USER_MESSAGE:\n"
+            f"{transcript}\n"
+            "Answer the current user message using the conversation above.")
 
     async def start_call(self, call_id: str) -> None:
         settings = self.settings_provider()
@@ -308,7 +323,8 @@ class SipSpeechPipeline:
             async with service.client(timeout=15.0) as client:
                 await service.ensure_target(client)
                 session_id = await service.latest_target_session_id(client)
-        run_id = await service.run_agent(settings.build_prompt(transcript), session_id)
+        run_id = await service.run_agent(
+            self._prompt_for_turn(call_id, transcript, settings), session_id)
 
         async def noop(*_args):
             return None
@@ -317,6 +333,7 @@ class SipSpeechPipeline:
         self._sessions[call_id] = new_session or session_id
         self.store.append_text(call_id, transcript=transcript,
                                agent_text=reply, run_id=run_id)
+        self._history.setdefault(call_id, []).append((transcript, reply))
         if not reply:
             return b""
         return await self._to_pcm(await service.tts(reply, settings.default_voice_lang))
@@ -334,7 +351,8 @@ class SipSpeechPipeline:
             async with service.client(timeout=15.0) as client:
                 await service.ensure_target(client)
                 session_id = await service.latest_target_session_id(client)
-        run_id = await service.run_agent(settings.build_prompt(transcript), session_id)
+        run_id = await service.run_agent(
+            self._prompt_for_turn(call_id, transcript, settings), session_id)
 
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         pending_text = ""
@@ -388,9 +406,11 @@ class SipSpeechPipeline:
         self._sessions[call_id] = new_session or session_id
         self.store.append_text(call_id, transcript=transcript,
                                agent_text=reply, run_id=run_id)
+        self._history.setdefault(call_id, []).append((transcript, reply))
 
     def forget(self, call_id: str) -> None:
         self._sessions.pop(call_id, None)
+        self._history.pop(call_id, None)
         client = self._realtime.pop(call_id, None)
         if client is not None:
             asyncio.create_task(client.close())
