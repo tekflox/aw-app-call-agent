@@ -3,3 +3,4 @@ uvicorn[standard]
 httpx
 edge-tts
 faster-whisper
+websockets>=13

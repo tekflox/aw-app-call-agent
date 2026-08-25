@@ -38,7 +38,9 @@ from call_agent_app.audio_socket import (  # noqa: E402
 from call_agent_app.call_history import CallStore  # noqa: E402
 from call_agent_app.__main__ import build_standalone_app  # noqa: E402
 from call_agent_app.sip_tester import pcm16_to_ulaw, ulaw_peak  # noqa: E402
-from call_agent_app.speech_pipeline import SipSpeechPipeline  # noqa: E402
+from call_agent_app.speech_pipeline import (  # noqa: E402
+    OpenAIRealtimeTranscriber, SipSpeechPipeline,
+)
 
 CONFIG = {
     "agents_platform_base": "http://ap.test",
@@ -259,7 +261,7 @@ def test_ws_set_agent_ignores_a_no_op(client):
 
 
 def test_settings_exposes_the_speech_pause(client):
-    assert client.get("/settings").json()["speech_pause_ms"] == 2000.0
+    assert client.get("/settings").json()["speech_pause_ms"] == 650.0
 
 
 # ---- SIP/Asterisk control plane -------------------------------------------
@@ -541,6 +543,52 @@ def test_openai_stt_builds_wav_and_returns_text(monkeypatch, tmp_path):
     assert captured["files"]["file"][1][:4] == b"RIFF"
     assert "sk-test" in captured["headers"]["Authorization"]
     store.close()
+
+
+def test_openai_realtime_stt_streams_pcm_and_commits(monkeypatch):
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self.events = asyncio.Queue()
+
+        async def send(self, raw):
+            event = json.loads(raw)
+            self.sent.append(event)
+            if event["type"] == "input_audio_buffer.commit":
+                await self.events.put(json.dumps({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": "olá em tempo real",
+                }))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return await self.events.get()
+
+        async def close(self):
+            return None
+
+    fake = FakeWebSocket()
+
+    async def connect(*_args, **_kwargs):
+        return fake
+
+    import websockets
+    monkeypatch.setattr(websockets, "connect", connect)
+
+    async def scenario():
+        client = OpenAIRealtimeTranscriber(
+            "sk-test", "gpt-live-transcribe", "low", ["pt"])
+        await client.connect()
+        await client.append(b"\x01\x00" * 800)  # 100 ms at 8 kHz
+        assert await client.commit() == "olá em tempo real"
+        await client.close()
+
+    asyncio.run(scenario())
+    assert fake.sent[0]["type"] == "session.update"
+    assert fake.sent[0]["session"]["audio"]["input"]["transcription"]["delay"] == "low"
+    assert any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
 
 
 def test_openai_tts_returns_mp3_bytes(monkeypatch):

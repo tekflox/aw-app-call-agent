@@ -55,6 +55,8 @@
       "AW_CALL_STT_MODEL": "${config.stt_model}",
       "AW_CALL_STT_PROVIDER": "${config.stt_provider}",
       "AW_CALL_STT_OPENAI_MODEL": "${config.stt_openai_model}",
+      "AW_CALL_STT_REALTIME_MODEL": "${config.stt_realtime_model}",
+      "AW_CALL_STT_REALTIME_DELAY": "${config.stt_realtime_delay}",
       "AW_CALL_TTS_PROVIDER": "${config.tts_provider}",
       "AW_CALL_TTS_OPENAI_MODEL": "${config.tts_openai_model}",
       "AW_CALL_TTS_OPENAI_VOICE": "${config.tts_openai_voice}",
@@ -197,7 +199,7 @@
       },
       "poll_interval_seconds": {
         "type": "number",
-        "default": 0.4,
+        "default": 0.1,
         "description": "How often the run's event log is polled while the agent is answering. Also the heartbeat rate the caller's stall watchdog sees."
       },
       "max_poll_seconds": {
@@ -207,7 +209,7 @@
       },
       "speech_pause_ms": {
         "type": "number",
-        "default": 2000,
+        "default": 650,
         "description": "How long a pause has to be before the caller is treated as having finished speaking, in milliseconds. Raise it if you think between sentences and the call keeps cutting you off."
       },
       "stt_model": {
@@ -220,17 +222,31 @@
         "type": "string",
         "enum": [
           "faster-whisper",
-          "openai"
+          "openai",
+          "openai-realtime"
         ],
         "default": "faster-whisper",
         "title": "Speech-to-text provider",
-        "description": "Use local faster-whisper or the OpenAI transcription API. Edge is not an STT provider."
+        "description": "Use local faster-whisper, completed-file OpenAI STT, or OpenAI Realtime STT that transcribes while the caller is still speaking."
       },
       "stt_openai_model": {
         "type": "string",
         "default": "gpt-4o-mini-transcribe",
         "title": "OpenAI STT model",
         "description": "Model sent to /v1/audio/transcriptions when OpenAI STT is selected."
+      },
+      "stt_realtime_model": {
+        "type": "string",
+        "default": "gpt-live-transcribe",
+        "title": "OpenAI realtime STT model",
+        "description": "Realtime transcription model used over one WebSocket per call."
+      },
+      "stt_realtime_delay": {
+        "type": "string",
+        "enum": ["minimal", "low", "medium", "high", "xhigh"],
+        "default": "low",
+        "title": "Realtime transcript delay",
+        "description": "Latency/accuracy tradeoff. Low is recommended for telephone audio."
       },
       "tts_provider": {
         "type": "string",

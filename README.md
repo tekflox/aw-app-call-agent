@@ -101,7 +101,7 @@ reply audio. A silent call is never ambiguous.
   socket *and* its conversation target, for that call only.
 - **Pause** — how much silence ends your turn. Chrome's own end-of-speech is
   sub-second and cuts people off mid-thought, so the recogniser runs
-  `continuous` and this client decides instead. Default 2s
+  `continuous` and this client decides instead. Default 650ms
   (`speech_pause_ms`).
 - **Language** — what you speak and what you hear. Comes from
   `default_voice_lang`, not the browser's UI language.
@@ -122,8 +122,13 @@ Pick an agent that answers in short spoken prose — a coding agent will narrate
 its tool calls at you.
 
 SIP speech providers are selected independently in Settings. STT can use the
-local `faster-whisper` model or OpenAI's audio transcription API; TTS can use
-Microsoft Edge or OpenAI's audio speech API. Selecting either OpenAI provider
+local `faster-whisper` model, OpenAI's completed-file transcription API, or
+OpenAI Realtime STT. The realtime path keeps one server-side WebSocket open
+per call and sends 100ms PCM batches while the caller is still speaking, so
+the final transcript is normally ready immediately after the turn boundary.
+TTS can use Microsoft Edge or OpenAI's audio speech API; SIP replies are
+synthesized and played sentence by sentence while later agent tokens are
+still arriving. Selecting either OpenAI provider
 requires the app-scoped `openai_api_key` secret. The OpenAI model and voice
 fields remain editable so a release does not hard-code one account's model
 availability. Edge is TTS-only; it is not presented as an STT option.

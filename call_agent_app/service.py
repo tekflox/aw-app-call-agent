@@ -111,6 +111,8 @@ class CallSettings:
     default_voice_lang: str = "pt-BR"
     stt_provider: str = "faster-whisper"
     stt_openai_model: str = "gpt-4o-mini-transcribe"
+    stt_realtime_model: str = "gpt-live-transcribe"
+    stt_realtime_delay: str = "low"
     tts_provider: str = "edge"
     tts_openai_model: str = "gpt-4o-mini-tts"
     tts_openai_voice: str = "alloy"
@@ -118,8 +120,8 @@ class CallSettings:
     #: Silence, in ms, that ends an utterance. The browser's own end-of-speech
     #: detection is far too eager for someone who thinks mid-sentence, so the
     #: client does its own with this value.
-    speech_pause_ms: float = 2000.0
-    poll_interval_seconds: float = 0.4
+    speech_pause_ms: float = 650.0
+    poll_interval_seconds: float = 0.1
     max_poll_seconds: float = 300.0
     #: Where the base/token actually came from — surfaced by GET /settings so
     #: "why is this app not calling anything" is answerable without a log.
@@ -131,7 +133,7 @@ class CallSettings:
 
     @property
     def max_polls(self) -> int:
-        interval = self.poll_interval_seconds or 0.4
+        interval = self.poll_interval_seconds or 0.1
         return max(1, int(self.max_poll_seconds / interval))
 
     def build_prompt(self, text: str) -> str:

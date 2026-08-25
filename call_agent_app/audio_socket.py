@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import inspect
 import sys
 import uuid
 from array import array
@@ -56,6 +57,8 @@ def encode_frame(kind: int, payload: bytes = b"") -> bytes:
 class AudioSocketBridge:
     def __init__(self, store: CallStore, host: str = "127.0.0.1", port: int = 9019,
                  utterance_handler: Callable[[str, bytes], Awaitable[bytes]] | None = None,
+                 utterance_streamer=None,
+                 audio_observer=None,
                  speech_pause_ms: int = 1200,
                  call_finished: Callable[[str], None] | None = None):
         self.store = store
@@ -64,6 +67,8 @@ class AudioSocketBridge:
         self.server: asyncio.AbstractServer | None = None
         self.active: set[str] = set()
         self.utterance_handler = utterance_handler
+        self.utterance_streamer = utterance_streamer
+        self.audio_observer = audio_observer
         self.speech_pause_ms = speech_pause_ms
         self.call_finished = call_finished
 
@@ -101,6 +106,8 @@ class AudioSocketBridge:
                     self.store.ensure_call(call_id)
                     self.store.start_recording(call_id)
                     self.active.add(call_id)
+                    if self.audio_observer is not None:
+                        await self.audio_observer.start_call(call_id)
                 elif kind == KIND_PCM_8K:
                     if not call_id:
                         raise ValueError("AudioSocket audio arrived before UUID")
@@ -109,11 +116,17 @@ class AudioSocketBridge:
                         level = pcm_rms(payload)
                         frame_ms = len(payload) / 16.0
                         if level >= 250:
+                            if not speaking and self.audio_observer is not None:
+                                await self.audio_observer.start_utterance(call_id)
                             speaking = True
                             silence_ms = 0.0
                             utterance.extend(payload)
+                            if self.audio_observer is not None:
+                                await self.audio_observer.append_audio(call_id, payload)
                         elif speaking:
                             utterance.extend(payload)
+                            if self.audio_observer is not None:
+                                await self.audio_observer.append_audio(call_id, payload)
                             silence_ms += frame_ms
                             if silence_ms >= self.speech_pause_ms:
                                 # AudioSocket closes a call after roughly two
@@ -121,8 +134,35 @@ class AudioSocketBridge:
                                 # STT + an agent run routinely take longer, so
                                 # feed quiet PCM while the response is being
                                 # prepared to keep the media channel alive.
-                                pending = asyncio.create_task(
-                                    self.utterance_handler(call_id, bytes(utterance)))
+                                live_transcript = None
+                                if self.audio_observer is not None:
+                                    try:
+                                        live_transcript = await self.audio_observer.commit_utterance(call_id)
+                                    except Exception as exc:
+                                        log.warning("live transcript failed for %s; using fallback: %s",
+                                                    call_id, exc)
+
+                                loop = asyncio.get_running_loop()
+                                deadline = None
+
+                                async def emit(response: bytes):
+                                    nonlocal deadline
+                                    if deadline is None or deadline < loop.time() - 0.1:
+                                        deadline = loop.time()
+                                    for start in range(0, len(response), 320):
+                                        chunk = response[start:start + 320]
+                                        writer.write(encode_frame(KIND_PCM_8K, chunk))
+                                        self.store.append_pcm(call_id, chunk)
+                                        await writer.drain()
+                                        deadline += 0.02
+                                        await asyncio.sleep(max(0, deadline - loop.time()))
+
+                                if self.utterance_streamer is not None:
+                                    pending = asyncio.create_task(self.utterance_streamer(
+                                        call_id, bytes(utterance), emit, live_transcript))
+                                else:
+                                    pending = asyncio.create_task(
+                                        self.utterance_handler(call_id, bytes(utterance)))
                                 while not pending.done():
                                     try:
                                         await asyncio.wait_for(
@@ -146,23 +186,8 @@ class AudioSocketBridge:
                                         writer.write(encode_frame(KIND_PCM_8K, keepalive))
                                         await writer.drain()
                                 response = pending.result()
-                                loop = asyncio.get_running_loop()
-                                deadline = loop.time()
-                                for start in range(0, len(response), 320):
-                                    chunk = response[start:start + 320]
-                                    writer.write(encode_frame(KIND_PCM_8K, chunk))
-                                    self.store.append_pcm(call_id, chunk)
-                                    # AudioSocket frames are raw media, not a
-                                    # downloadable file.  Sending the whole
-                                    # reply in one TCP burst makes Asterisk
-                                    # emit a matching RTP burst which real
-                                    # softphone jitter buffers discard.  Pace
-                                    # 320-byte slin/8 kHz frames at 20 ms. Use
-                                    # absolute deadlines so scheduler jitter
-                                    # does not accumulate across a long reply.
-                                    await writer.drain()
-                                    deadline += 0.02
-                                    await asyncio.sleep(max(0, deadline - loop.time()))
+                                if response:
+                                    await emit(response)
                                 utterance.clear()
                                 speaking = False
                                 silence_ms = 0.0
@@ -180,7 +205,9 @@ class AudioSocketBridge:
                 self.active.discard(call_id)
                 self.store.finish(call_id, status=status, error=error)
                 if self.call_finished is not None:
-                    self.call_finished(call_id)
+                    result = self.call_finished(call_id)
+                    if inspect.isawaitable(result):
+                        await result
             writer.close()
             try:
                 await writer.wait_closed()

@@ -108,6 +108,10 @@ def resolve(config: dict | None) -> CallSettings:
         stt_provider=(cfg.get("stt_provider") or defaults.stt_provider).strip(),
         stt_openai_model=(cfg.get("stt_openai_model")
                           or defaults.stt_openai_model).strip(),
+        stt_realtime_model=(cfg.get("stt_realtime_model")
+                            or defaults.stt_realtime_model).strip(),
+        stt_realtime_delay=(cfg.get("stt_realtime_delay")
+                            or defaults.stt_realtime_delay).strip(),
         tts_provider=(cfg.get("tts_provider") or defaults.tts_provider).strip(),
         tts_openai_model=(cfg.get("tts_openai_model")
                           or defaults.tts_openai_model).strip(),

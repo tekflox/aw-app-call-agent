@@ -46,6 +46,8 @@ def _container_config() -> dict:
         "default_voice_lang": "AW_CALL_DEFAULT_VOICE_LANG",
         "stt_provider": "AW_CALL_STT_PROVIDER",
         "stt_openai_model": "AW_CALL_STT_OPENAI_MODEL",
+        "stt_realtime_model": "AW_CALL_STT_REALTIME_MODEL",
+        "stt_realtime_delay": "AW_CALL_STT_REALTIME_DELAY",
         "tts_provider": "AW_CALL_TTS_PROVIDER",
         "tts_openai_model": "AW_CALL_TTS_OPENAI_MODEL",
         "tts_openai_voice": "AW_CALL_TTS_OPENAI_VOICE",
@@ -85,6 +87,8 @@ def build_standalone_app() -> FastAPI:
         host=os.environ.get("ASTERISK_AUDIO_SOCKET_HOST", "127.0.0.1"),
         port=int(os.environ.get("ASTERISK_AUDIO_SOCKET_PORT", "9019")),
         utterance_handler=pipeline.handle,
+        utterance_streamer=pipeline.handle_stream,
+        audio_observer=pipeline,
         speech_pause_ms=int(float(os.environ.get("AW_CALL_SPEECH_PAUSE_MS", "1200"))),
         call_finished=pipeline.forget,
     )
