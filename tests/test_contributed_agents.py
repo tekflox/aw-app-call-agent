@@ -54,6 +54,6 @@ def test_contribution_contains_no_credentials_or_fixed_gateway_url():
 
 def test_realtime_agent_uses_low_reasoning_for_phone_latency():
     model = next(row for row in SPEC["models"]
-                 if row["slug"] == "openai-gpt-5-6-luna")
+                 if row["slug"] == "call-agent-openai-gpt-5-6-luna")
     assert model["provider"] == "openai"
     assert model["params"]["reasoning_effort"] == "low"
