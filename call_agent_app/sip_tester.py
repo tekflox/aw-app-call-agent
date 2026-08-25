@@ -227,6 +227,14 @@ class SipSoftphoneTester:
         total_received = bytearray()
         peak = 0
         for turn, pcm in enumerate(prompts, 1):
+            # Drain only media left from the previous phase *before* sending
+            # this prompt. Draining after the prompt races fast agents and can
+            # throw away the very TTS response the test is meant to assert.
+            while True:
+                try:
+                    self.rtp.recvfrom(2048)
+                except socket.timeout:
+                    break
             payload = pcm16_to_ulaw(pcm) + (b"\xff" * 8000)
             total_sent += len(payload)
             for offset in range(0, len(payload), 160):
@@ -235,12 +243,6 @@ class SipSoftphoneTester:
                 self.rtp.sendto(header + frame, destination)
                 seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
                 time.sleep(0.02)
-            # Drain the answer tone/old response before measuring this turn.
-            while True:
-                try:
-                    self.rtp.recvfrom(2048)
-                except socket.timeout:
-                    break
             turn_received = bytearray()
             turn_peak = 0
             deadline = time.monotonic() + response_timeout
