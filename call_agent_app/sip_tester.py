@@ -6,6 +6,7 @@ PCMU, one REGISTER, one INVITE and one BYE.  This is not a general softphone.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import math
 import random
 import re
@@ -221,7 +222,15 @@ class SipSoftphoneTester:
         addr_match = re.search(r"c=IN IP4\s+([^\s]+)", answer)
         if not port_match:
             raise SipTestError("answer SDP has no audio port")
-        return ((addr_match.group(1) if addr_match else self.host,
+        advertised = addr_match.group(1) if addr_match else self.host
+        # The self-test runs beside Asterisk and calls 127.0.0.1. Asterisk's
+        # SDP correctly advertises the public address for real softphones,
+        # but sending the container's own test RTP through that public address
+        # depends on host hairpin NAT and intermittently delivers no media.
+        # Keep loopback tests on loopback; external tests still honour SDP.
+        media_host = (self.host if ipaddress.ip_address(self.host).is_loopback
+                      else advertised)
+        return ((media_host,
                  int(port_match.group(1))), to_header)
 
     def run_conversation(self, prompts: list[bytes], response_timeout: float = 180,
