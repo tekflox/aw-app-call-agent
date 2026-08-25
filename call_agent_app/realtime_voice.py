@@ -16,6 +16,10 @@ from .call_history import CallStore
 from .service import CallAgentError, CallSettings
 
 log = logging.getLogger("aw_apps.call_agent.realtime_voice")
+# Uvicorn's default application logger threshold is WARNING. Latency tracing
+# is intentionally INFO and must remain visible without turning every library
+# in the container verbose.
+log.setLevel(logging.INFO)
 
 
 def pcm8k_to_pcm24k(pcm: bytes) -> bytes:

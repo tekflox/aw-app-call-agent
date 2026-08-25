@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from .call_history import CallStore
 
 log = logging.getLogger("aw_apps.call_agent.audio_socket")
+log.setLevel(logging.INFO)
 
 KIND_HANGUP = 0x00
 KIND_UUID = 0x01
