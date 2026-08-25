@@ -57,3 +57,4 @@ def test_realtime_agent_uses_low_reasoning_for_phone_latency():
                  if row["slug"] == "call-agent-openai-gpt-5-6-luna")
     assert model["provider"] == "openai"
     assert model["params"]["reasoning_effort"] == "low"
+    assert model["params"]["use_responses_api"] is True

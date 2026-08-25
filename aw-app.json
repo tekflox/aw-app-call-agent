@@ -134,7 +134,8 @@
           "model_id": "gpt-5.6-luna",
           "display_name": "OpenAI \u2013 GPT-5.6 Luna",
           "params": {
-            "reasoning_effort": "low"
+            "reasoning_effort": "low",
+            "use_responses_api": true
           },
           "enabled": true
         }
