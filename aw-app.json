@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "call-agent",
   "name": "Call Agent",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak \u2014 your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
   "tier": "container",
   "requires_ui_refresh": true,
@@ -189,7 +189,10 @@
       },
       "stt_provider": {
         "type": "string",
-        "enum": ["faster-whisper", "openai"],
+        "enum": [
+          "faster-whisper",
+          "openai"
+        ],
         "default": "faster-whisper",
         "title": "Speech-to-text provider",
         "description": "Use local faster-whisper or the OpenAI transcription API. Edge is not an STT provider."
@@ -202,7 +205,10 @@
       },
       "tts_provider": {
         "type": "string",
-        "enum": ["edge", "openai"],
+        "enum": [
+          "edge",
+          "openai"
+        ],
         "default": "edge",
         "title": "Text-to-speech provider",
         "description": "Use Microsoft Edge TTS or the OpenAI speech API."
