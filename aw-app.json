@@ -127,6 +127,28 @@
       }
     ],
     "agents": {
+      "models": [
+        {
+          "slug": "openai-gpt-5-6-luna",
+          "provider": "openai",
+          "model_id": "gpt-5.6-luna",
+          "display_name": "OpenAI – GPT-5.6 Luna",
+          "params": {
+            "reasoning_effort": "low"
+          },
+          "enabled": true
+        }
+      ],
+      "agent_configs": [
+        {
+          "slug": "agent-config-call-agent-tools",
+          "name": "Call Agent Tools",
+          "description": "Workspace MCP gateway for the agent answering calls. The live URL and bearer token are resolved by the workspace when this contribution is activated; no credential is stored in the manifest.",
+          "mcp_servers": [
+            "aw-gateway"
+          ]
+        }
+      ],
       "agents": [
         {
           "slug": "call-agent-openai",
@@ -134,7 +156,8 @@
           "description": "Low-latency phone agent backed by an OpenAI direct API model.",
           "system_prompt_file": "prompts/call-agent-openai.md",
           "model_slug": "openai-gpt-5-6-luna",
-          "capabilities": "Answers Call Agent phone conversations in short, natural spoken turns with low latency.",
+          "agent_config_slug": "agent-config-call-agent-tools",
+          "capabilities": "Answers Call Agent phone conversations in short, natural spoken turns with low latency and can use the workspace MCP tools when the caller asks it to act.",
           "use_cases": [
             "answer a Call Agent phone call",
             "low-latency spoken conversation",
