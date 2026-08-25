@@ -73,6 +73,7 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
     agent until the next workspace restart.
     """
     app = FastAPI(title="call-agent")
+    sip_test_jobs: dict[str, dict] = {}
 
     def current() -> CallSettings:
         cfg = {}
@@ -254,8 +255,7 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
         return {"ok": True, "call_id": call_id,
                 "message": "internal AudioSocket recording created"}
 
-    @app.post("/telephony/sip-integration-test")
-    async def sip_integration_test(request: SipIntegrationTestRequest):
+    async def _run_sip_integration_test(request: SipIntegrationTestRequest):
         """Call extension 700 through SIP and verify the agent answers in RTP.
 
         This runs entirely inside the app container: no DID, trunk or external
@@ -348,6 +348,41 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             "response_audio": response_audio if call_store else {},
             "message": "SIP, two speech turns, agent memory and synthesized voice verified",
         }
+
+    @app.post("/telephony/sip-integration-test", status_code=202)
+    async def sip_integration_test(request: SipIntegrationTestRequest):
+        """Start the long live call without holding the UI proxy open."""
+        cfg = raw_config()
+        if not str(cfg.get("internal_sip_password") or ""):
+            return JSONResponse({"error": "internal SIP password is not configured"},
+                                status_code=409)
+        if not current().agents_platform_base:
+            return JSONResponse({"error": "Agents Platform is not configured"},
+                                status_code=409)
+        job_id = uuid.uuid4().hex
+        sip_test_jobs[job_id] = {"state": "running"}
+
+        async def run_job():
+            result = await _run_sip_integration_test(request)
+            if isinstance(result, JSONResponse):
+                import json
+                body = json.loads(result.body)
+                sip_test_jobs[job_id] = {
+                    "state": "failed", "status": result.status_code, **body,
+                }
+            else:
+                sip_test_jobs[job_id] = {"state": "completed", **result}
+
+        asyncio.create_task(run_job())
+        return {"ok": True, "job_id": job_id, "state": "running"}
+
+    @app.get("/telephony/sip-integration-test/{job_id}")
+    async def sip_integration_test_status(job_id: str):
+        job = sip_test_jobs.get(job_id)
+        if job is None:
+            return JSONResponse({"error": "SIP integration test not found"},
+                                status_code=404)
+        return job
 
     @app.post("/telephony/calls", status_code=202)
     async def originate_call(call: OutboundCall):

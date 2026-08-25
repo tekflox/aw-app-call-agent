@@ -667,8 +667,17 @@ export function mountCallUI(root, io) {
       });
       const body = await resp.json();
       if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+      let result = body;
+      while (result.state === 'running') {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const statusResp = await io.fetch(
+          `/telephony/sip-integration-test/${encodeURIComponent(body.job_id)}`);
+        result = await statusResp.json();
+        if (!statusResp.ok) throw new Error(result.error || `HTTP ${statusResp.status}`);
+      }
+      if (result.state === 'failed') throw new Error(result.error || 'SIP test failed');
       await loadCallHistory();
-      add('agent', body.agent_text || 'SIP, speech and agent response verified.');
+      add('agent', result.agent_text || 'SIP, speech and agent response verified.');
     } catch (e) {
       add('err', 'SIP integration test failed: ' + e.message);
     } finally {
