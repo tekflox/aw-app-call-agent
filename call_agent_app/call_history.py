@@ -156,13 +156,13 @@ class CallStore:
                 )
 
     def get(self, call_id: str) -> dict | None:
-        with self._connect() as conn:
+        with self._lock, self._connect() as conn:
             row = conn.execute("SELECT * FROM calls WHERE id=?", (call_id,)).fetchone()
         return self._row(row) if row else None
 
     def list(self, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit), 500))
-        with self._connect() as conn:
+        with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM calls ORDER BY started_at DESC LIMIT ?", (limit,)
             ).fetchall()

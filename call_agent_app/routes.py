@@ -284,8 +284,14 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             def turn_complete(turn: int) -> bool:
                 if not call_store:
                     return True
-                fresh = [row for row in call_store.list(20)
-                         if row["id"] not in before]
+                try:
+                    fresh = [row for row in call_store.list(20)
+                             if row["id"] not in before]
+                except Exception:
+                    # The AudioSocket writer may briefly hold SQLite while a
+                    # PCM frame updates its byte count. This callback is a
+                    # poll, so contention means "not yet", not test failure.
+                    return False
                 if not fresh:
                     return False
                 return len(fresh[0].get("agent_text", "").splitlines()) >= turn
