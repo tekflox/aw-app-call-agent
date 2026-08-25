@@ -23,6 +23,7 @@ from .call_history import CallStore
 
 log = logging.getLogger("aw_apps.call_agent.audio_socket")
 log.setLevel(logging.INFO)
+latency_log = logging.getLogger("uvicorn.error")
 
 KIND_HANGUP = 0x00
 KIND_UUID = 0x01
@@ -130,7 +131,7 @@ class AudioSocketBridge:
                 output_started = True
             if not first_emit_at:
                 first_emit_at = time.monotonic()
-                log.info("call_latency call=%s event=bridge_first_audio session_ms=%.1f",
+                latency_log.info("call_latency call=%s event=bridge_first_audio session_ms=%.1f",
                          call_id, (first_emit_at - connected_at) * 1000)
             await output_queue.put(response)
 
@@ -146,7 +147,7 @@ class AudioSocketBridge:
                     writer.write(encode_frame(KIND_PCM_8K, chunk))
                     if not first_playback_at:
                         first_playback_at = time.monotonic()
-                        log.info(
+                        latency_log.info(
                             "call_latency call=%s event=first_playback bridge_queue_ms=%.1f session_ms=%.1f",
                             call_id, (first_playback_at - first_emit_at) * 1000,
                             (first_playback_at - connected_at) * 1000)
@@ -173,7 +174,7 @@ class AudioSocketBridge:
                     if len(payload) != 16:
                         raise ValueError("AudioSocket UUID must be 16 bytes")
                     call_id = str(uuid.UUID(bytes=payload))
-                    log.info("call_latency call=%s event=audiosocket_connected", call_id)
+                    latency_log.info("call_latency call=%s event=audiosocket_connected", call_id)
                     self.store.ensure_call(call_id)
                     self.store.start_recording(call_id)
                     self.active.add(call_id)
@@ -196,7 +197,7 @@ class AudioSocketBridge:
                     media_frames += 1
                     if not first_media_at:
                         first_media_at = now
-                        log.info(
+                        latency_log.info(
                             "call_latency call=%s event=first_input_audio after_connect_ms=%.1f",
                             call_id, (now - connected_at) * 1000)
                     if last_media_at:
@@ -218,7 +219,7 @@ class AudioSocketBridge:
                                     output_queue.get_nowait()
                                 except asyncio.QueueEmpty:
                                     break
-                            log.info(
+                            latency_log.info(
                                 "call_latency call=%s event=local_barge_in level=%s response_active=%s",
                                 call_id, level,
                                 getattr(duplex_session, "response_active", False))
@@ -339,7 +340,7 @@ class AudioSocketBridge:
                 playback_task.cancel()
                 await asyncio.gather(playback_task, return_exceptions=True)
             if call_id:
-                log.info(
+                latency_log.info(
                     "call_latency call=%s event=call_summary duration_ms=%.1f media_frames=%s late_frames=%s max_media_gap_ms=%.1f",
                     call_id, (time.monotonic() - connected_at) * 1000,
                     media_frames, late_frames, max_media_gap_ms)

@@ -20,6 +20,7 @@ log = logging.getLogger("aw_apps.call_agent.realtime_voice")
 # is intentionally INFO and must remain visible without turning every library
 # in the container verbose.
 log.setLevel(logging.INFO)
+latency_log = logging.getLogger("uvicorn.error")
 
 
 def pcm8k_to_pcm24k(pcm: bytes) -> bytes:
@@ -86,7 +87,7 @@ class OpenAIRealtimeVoiceSession:
         if self._speech_stopped_at:
             fields["after_speech_stop_ms"] = round(
                 (now - self._speech_stopped_at) * 1000, 1)
-        log.info("call_latency %s", " ".join(
+        latency_log.info("call_latency %s", " ".join(
             f"{key}={value}" for key, value in fields.items()))
 
     async def _instructions(self) -> str:
