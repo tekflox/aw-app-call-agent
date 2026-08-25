@@ -122,7 +122,12 @@ class OpenAIRealtimeTranscriber:
 
     async def close(self):
         if self.ws is not None:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except Exception:
+                # Closing an already-closed websockets transport can raise a
+                # transport-level RuntimeError. Cleanup must stay idempotent.
+                pass
         if self.reader_task is not None:
             self.reader_task.cancel()
 
@@ -155,18 +160,57 @@ class SipSpeechPipeline:
             self._realtime[call_id] = client
 
     async def start_utterance(self, call_id: str) -> None:
-        # The Realtime socket is opened at call setup; no per-turn setup is
-        # needed until the first audio chunk arrives.
-        return None
+        # Realtime transcription sockets can be closed by either side after a
+        # commit.  A follow-up must never inherit that dead transport.  The
+        # first turn normally uses the socket pre-opened by ``start_call``;
+        # later turns reconnect here before their first audio frame.
+        client = self._realtime.get(call_id)
+        if (client is not None and client.ws is not None and
+                client.reader_task is not None and not client.reader_task.done()):
+            return
+        if client is not None:
+            await client.close()
+            self._realtime.pop(call_id, None)
+        settings = self.settings_provider()
+        if settings.stt_provider != "openai-realtime" or not settings.openai_api_key:
+            return
+        language = (settings.default_voice_lang or "pt").split("-", 1)[0].lower()
+        replacement = OpenAIRealtimeTranscriber(
+            settings.openai_api_key, settings.stt_realtime_model,
+            settings.stt_realtime_delay, [language])
+        try:
+            await replacement.connect()
+        except Exception as exc:
+            log.warning("Realtime STT reconnect failed for call %s; using fallback: %s",
+                        call_id, exc)
+        else:
+            self._realtime[call_id] = replacement
 
     async def append_audio(self, call_id: str, pcm: bytes) -> None:
         client = self._realtime.get(call_id)
         if client is not None:
-            await client.append(pcm)
+            try:
+                await client.append(pcm)
+            except Exception as exc:
+                # The complete utterance is retained by AudioSocket, so a
+                # dead live transport can safely fall back to file STT.
+                log.warning("Realtime STT stream closed for call %s; using fallback: %s",
+                            call_id, exc)
+                self._realtime.pop(call_id, None)
+                await client.close()
 
     async def commit_utterance(self, call_id: str) -> str | None:
         client = self._realtime.get(call_id)
-        return await client.commit() if client is not None else None
+        if client is None:
+            return None
+        try:
+            return await client.commit()
+        finally:
+            # One socket per utterance is slightly more conservative than
+            # reusing it, but makes follow-ups deterministic across server
+            # closes. The next socket is opened as soon as speech starts.
+            self._realtime.pop(call_id, None)
+            await client.close()
 
     def _transcribe_sync(self, pcm: bytes, language: str | None = None) -> str:
         if self._model is None:

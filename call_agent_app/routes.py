@@ -57,7 +57,9 @@ class HangupCall(BaseModel):
 
 
 class SipIntegrationTestRequest(BaseModel):
-    text: str = "Olá, diga apenas que o teste do Call Agent funcionou."
+    first_text: str = "Eu gosto de abacaxi."
+    follow_up_text: str = "Que fruta eu gosto?"
+    expected_memory: str = "abacaxi"
 
 
 def build_routes(config_provider: Callable[[], dict] | None = None,
@@ -273,10 +275,23 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
         before = {row["id"] for row in call_store.list(20)} if call_store else set()
         tester = SipSoftphoneTester(username, password, extension)
         try:
-            mp3 = await CallAgentService(current()).tts(
-                request.text, current().default_voice_lang)
-            pcm = await asyncio.to_thread(mp3_to_pcm8k, mp3)
-            result = await asyncio.to_thread(tester.run, pcm)
+            service = CallAgentService(current())
+            prompts = []
+            for text in (request.first_text, request.follow_up_text):
+                mp3 = await service.tts(text, current().default_voice_lang)
+                prompts.append(await asyncio.to_thread(mp3_to_pcm8k, mp3))
+
+            def turn_complete(turn: int) -> bool:
+                if not call_store:
+                    return True
+                fresh = [row for row in call_store.list(20)
+                         if row["id"] not in before]
+                if not fresh:
+                    return False
+                return len(fresh[0].get("agent_text", "").splitlines()) >= turn
+
+            result = await asyncio.to_thread(
+                tester.run_conversation, prompts, 180, turn_complete)
             call = None
             if call_store:
                 for _ in range(100):
@@ -288,6 +303,16 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
                     await asyncio.sleep(0.1)
             if call_store and call is None:
                 raise SipTestError("RTP answered, but no completed agent turn was recorded")
+            if call_store:
+                transcripts = call.get("transcript", "").splitlines()
+                replies = call.get("agent_text", "").splitlines()
+                if len(transcripts) < 2 or len(replies) < 2:
+                    raise SipTestError("follow-up turn was not completed")
+                expected = request.expected_memory.casefold()
+                if expected not in replies[-1].casefold():
+                    raise SipTestError(
+                        f"memory assertion failed: expected {request.expected_memory!r} "
+                        "in the follow-up response")
         except (SipTestError, CallAgentError) as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
         except Exception as exc:
@@ -302,7 +327,8 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             "call_id": call["id"] if call else "",
             "transcript": call.get("transcript", "") if call else "",
             "agent_text": call.get("agent_text", "") if call else "",
-            "message": "SIP, speech pipeline and agent response verified",
+            "memory_verified": True,
+            "message": "SIP, two speech turns, agent memory and RTP responses verified",
         }
 
     @app.post("/telephony/calls", status_code=202)

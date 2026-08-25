@@ -591,6 +591,63 @@ def test_openai_realtime_stt_streams_pcm_and_commits(monkeypatch):
     assert any(item["type"] == "input_audio_buffer.append" for item in fake.sent)
 
 
+def test_openai_realtime_reconnects_for_follow_up(monkeypatch, tmp_path):
+    sockets = []
+
+    class FakeWebSocket:
+        def __init__(self, transcript):
+            self.transcript = transcript
+            self.sent = []
+            self.events = asyncio.Queue()
+
+        async def send(self, raw):
+            event = json.loads(raw)
+            self.sent.append(event)
+            if event["type"] == "input_audio_buffer.commit":
+                await self.events.put(json.dumps({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": self.transcript,
+                }))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return await self.events.get()
+
+        async def close(self):
+            return None
+
+    async def connect(*_args, **_kwargs):
+        fake = FakeWebSocket(
+            "eu gosto de abacaxi" if not sockets else "que fruta eu gosto?")
+        sockets.append(fake)
+        return fake
+
+    import websockets
+    monkeypatch.setattr(websockets, "connect", connect)
+    settings = CallSettings(
+        stt_provider="openai-realtime", openai_api_key="sk-test",
+        stt_realtime_model="gpt-live-transcribe", stt_realtime_delay="low")
+    store = CallStore(tmp_path)
+    pipeline = SipSpeechPipeline(lambda: settings, store)
+
+    async def scenario():
+        await pipeline.start_call("memory-call")
+        await pipeline.start_utterance("memory-call")
+        await pipeline.append_audio("memory-call", b"\x01\x00" * 800)
+        assert await pipeline.commit_utterance("memory-call") == "eu gosto de abacaxi"
+        await pipeline.start_utterance("memory-call")
+        await pipeline.append_audio("memory-call", b"\x02\x00" * 800)
+        assert await pipeline.commit_utterance("memory-call") == "que fruta eu gosto?"
+
+    asyncio.run(scenario())
+    assert len(sockets) == 2
+    assert all(any(item["type"] == "input_audio_buffer.commit" for item in ws.sent)
+               for ws in sockets)
+    store.close()
+
+
 def test_openai_tts_returns_mp3_bytes(monkeypatch):
     captured = {}
 

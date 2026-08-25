@@ -15,6 +15,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
+from collections.abc import Callable
 
 
 class SipTestError(RuntimeError):
@@ -29,6 +30,7 @@ class SipTestResult:
     received_audio_bytes: int
     response_peak: int
     elapsed_seconds: float
+    turns: int = 1
 
 
 def _ulaw_encode(sample: int) -> int:
@@ -208,56 +210,73 @@ class SipSoftphoneTester:
         return ((addr_match.group(1) if addr_match else self.host,
                  int(port_match.group(1))), to_header)
 
-    def run(self, pcm: bytes, response_timeout: float = 180) -> SipTestResult:
+    def run_conversation(self, prompts: list[bytes], response_timeout: float = 180,
+                         turn_complete: Callable[[int], bool] | None = None
+                         ) -> SipTestResult:
+        """Send multiple spoken turns over one SIP dialog.
+
+        ``turn_complete`` lets the app assert that each agent turn was
+        durably recorded before sending the follow-up. This prevents the
+        processing cue from being mistaken for the real spoken answer.
+        """
         started = time.monotonic()
         self._register()
         destination, to_header = self._invite()
-        payload = pcm16_to_ulaw(pcm) + (b"\xff" * 8000 * 3)
         seq, timestamp, ssrc = random.randrange(65536), random.randrange(2**32), random.randrange(2**32)
-        for offset in range(0, len(payload), 160):
-            frame = payload[offset:offset + 160].ljust(160, b"\xff")
-            header = struct.pack("!BBHII", 0x80, 0, seq, timestamp, ssrc)
-            self.rtp.sendto(header + frame, destination)
-            seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
-            time.sleep(0.02)
-        # Discard the immediate answer tone.  The integration test must prove
-        # that the agent's later TTS reply arrived, not merely that RTP works.
-        while True:
-            try:
-                self.rtp.recvfrom(2048)
-            except socket.timeout:
-                break
-        received = bytearray()
+        total_sent = 0
+        total_received = bytearray()
         peak = 0
-        deadline = time.monotonic() + response_timeout
-        while time.monotonic() < deadline:
-            # Asterisk's AudioSocket application treats a silent RTP source
-            # as an inactive call. Keep the caller leg clocking while STT and
-            # the agent are thinking, exactly as a real softphone does.
-            header = struct.pack("!BBHII", 0x80, 0, seq, timestamp, ssrc)
-            self.rtp.sendto(header + (b"\xff" * 160), destination)
-            seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
-            try:
-                packet, _source = self.rtp.recvfrom(2048)
-            except socket.timeout:
-                continue
-            if len(packet) <= 12:
-                continue
-            audio = packet[12:]
-            received.extend(audio)
-            peak = max(peak, ulaw_peak(audio))
-            if peak >= 500 and len(received) >= 1600:
-                break
+        for turn, pcm in enumerate(prompts, 1):
+            payload = pcm16_to_ulaw(pcm) + (b"\xff" * 8000)
+            total_sent += len(payload)
+            for offset in range(0, len(payload), 160):
+                frame = payload[offset:offset + 160].ljust(160, b"\xff")
+                header = struct.pack("!BBHII", 0x80, 0, seq, timestamp, ssrc)
+                self.rtp.sendto(header + frame, destination)
+                seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
+                time.sleep(0.02)
+            # Drain the answer tone/old response before measuring this turn.
+            while True:
+                try:
+                    self.rtp.recvfrom(2048)
+                except socket.timeout:
+                    break
+            turn_received = bytearray()
+            turn_peak = 0
+            deadline = time.monotonic() + response_timeout
+            while time.monotonic() < deadline:
+                header = struct.pack("!BBHII", 0x80, 0, seq, timestamp, ssrc)
+                self.rtp.sendto(header + (b"\xff" * 160), destination)
+                seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
+                try:
+                    packet, _source = self.rtp.recvfrom(2048)
+                except socket.timeout:
+                    packet = b""
+                if len(packet) > 12:
+                    audio = packet[12:]
+                    turn_received.extend(audio)
+                    turn_peak = max(turn_peak, ulaw_peak(audio))
+                recorded = turn_complete(turn) if turn_complete else True
+                if recorded and turn_peak >= 500 and len(turn_received) >= 1600:
+                    break
+            if not (turn_complete(turn) if turn_complete else True):
+                raise SipTestError(f"agent turn {turn} was not recorded")
+            if turn_peak < 500:
+                raise SipTestError(
+                    f"no audible RTP response for turn {turn} "
+                    f"(received={len(turn_received)} bytes, peak={turn_peak})")
+            total_received.extend(turn_received)
+            peak = max(peak, turn_peak)
         uri = f"sip:{self.extension}@{self.host}"
         try:
             self._send("BYE", uri, 12, to=to_header)
         except OSError:
             pass
-        if peak < 500:
-            raise SipTestError(
-                f"no audible RTP response (received={len(received)} bytes, peak={peak})")
-        return SipTestResult(True, True, len(payload), len(received), peak,
-                             round(time.monotonic() - started, 2))
+        return SipTestResult(True, True, total_sent, len(total_received), peak,
+                             round(time.monotonic() - started, 2), len(prompts))
+
+    def run(self, pcm: bytes, response_timeout: float = 180) -> SipTestResult:
+        return self.run_conversation([pcm], response_timeout)
 
 
 def generate_test_pcm(seconds: float = 1.5) -> bytes:
