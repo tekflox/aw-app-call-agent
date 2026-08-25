@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import sys
+import time
 from array import array
 from collections.abc import Awaitable, Callable
 
@@ -66,6 +67,23 @@ class OpenAIRealtimeVoiceSession:
         self._reply_parts: list[str] = []
         self._persist_tasks: set[asyncio.Task] = set()
         self._closed = False
+        self.response_active = False
+        self._connected_at = 0.0
+        self._speech_started_at = 0.0
+        self._speech_stopped_at = 0.0
+        self._response_created_at = 0.0
+        self._first_audio_seen = False
+
+    def _latency(self, event: str, **values) -> None:
+        now = time.monotonic()
+        fields = {"call": self.call_id, "event": event, **values}
+        if self._connected_at:
+            fields["session_ms"] = round((now - self._connected_at) * 1000, 1)
+        if self._speech_stopped_at:
+            fields["after_speech_stop_ms"] = round(
+                (now - self._speech_stopped_at) * 1000, 1)
+        log.info("call_latency %s", " ".join(
+            f"{key}={value}" for key, value in fields.items()))
 
     async def _instructions(self) -> str:
         base = self.settings.prompt_template.replace("${text}", "").strip()
@@ -98,15 +116,20 @@ class OpenAIRealtimeVoiceSession:
         if not self.settings.openai_api_key:
             raise CallAgentError("OpenAI Realtime voice requires `openai_api_key`")
         import websockets
+        started = time.monotonic()
         self.ws = await websockets.connect(
             f"wss://api.openai.com/v1/realtime?model={self.settings.realtime_model}",
             additional_headers={"Authorization": f"Bearer {self.settings.openai_api_key}"},
             open_timeout=15, close_timeout=5, max_size=8 * 1024 * 1024)
+        websocket_ms = round((time.monotonic() - started) * 1000, 1)
+        instruction_started = time.monotonic()
+        instructions = await self._instructions()
+        instructions_ms = round((time.monotonic() - instruction_started) * 1000, 1)
         await self.ws.send(json.dumps({
             "type": "session.update",
             "session": {
                 "type": "realtime",
-                "instructions": await self._instructions(),
+                "instructions": instructions,
                 "output_modalities": ["audio"],
                 "audio": {
                     "input": {
@@ -126,6 +149,10 @@ class OpenAIRealtimeVoiceSession:
                 },
             },
         }))
+        self._connected_at = time.monotonic()
+        self._latency("session_connected", websocket_ms=websocket_ms,
+                      control_plane_ms=instructions_ms,
+                      model=self.settings.realtime_model)
         self.reader_task = asyncio.create_task(self._read_events())
 
     async def append_audio(self, pcm8k: bytes) -> None:
@@ -137,8 +164,9 @@ class OpenAIRealtimeVoiceSession:
         }))
 
     async def interrupt(self) -> None:
-        if self.ws is None:
+        if self.ws is None or not self.response_active:
             return
+        self._latency("barge_in_cancel")
         try:
             await self.ws.send(json.dumps({"type": "response.cancel"}))
         except Exception:
@@ -149,12 +177,36 @@ class OpenAIRealtimeVoiceSession:
             async for raw in self.ws:
                 event = json.loads(raw)
                 kind = event.get("type", "")
-                if kind in {"response.output_audio.delta", "response.audio.delta"}:
+                if kind == "input_audio_buffer.speech_started":
+                    self._speech_started_at = time.monotonic()
+                    self._latency("openai_speech_started",
+                                  audio_start_ms=event.get("audio_start_ms", ""))
+                elif kind == "input_audio_buffer.speech_stopped":
+                    self._speech_stopped_at = time.monotonic()
+                    self._latency("openai_speech_stopped",
+                                  speech_ms=round((self._speech_stopped_at -
+                                                   self._speech_started_at) * 1000, 1)
+                                  if self._speech_started_at else "")
+                elif kind == "response.created":
+                    self.response_active = True
+                    self._response_created_at = time.monotonic()
+                    self._first_audio_seen = False
+                    self._latency("response_created")
+                elif kind in {"response.output_audio.delta", "response.audio.delta"}:
                     audio = base64.b64decode(event.get("delta") or "")
                     if audio:
+                        if not self._first_audio_seen:
+                            self._first_audio_seen = True
+                            self._latency(
+                                "first_openai_audio",
+                                model_first_audio_ms=round(
+                                    (time.monotonic() - self._response_created_at) * 1000, 1)
+                                if self._response_created_at else "")
                         await self.emit(pcm24k_to_pcm8k(audio))
                 elif kind == "conversation.item.input_audio_transcription.completed":
                     self._last_transcript = str(event.get("transcript") or "").strip()
+                    self._latency("transcript_completed",
+                                  chars=len(self._last_transcript))
                 elif kind in {"response.output_audio_transcript.delta",
                               "response.audio_transcript.delta"}:
                     self._reply_parts.append(str(event.get("delta") or ""))
@@ -164,6 +216,8 @@ class OpenAIRealtimeVoiceSession:
                     if transcript:
                         self._reply_parts = [transcript]
                 elif kind == "response.done":
+                    self.response_active = False
+                    self._latency("response_done")
                     reply = "".join(self._reply_parts).strip()
                     self._reply_parts.clear()
                     # The input transcription completion can arrive just

@@ -14,6 +14,7 @@ import logging
 import math
 import inspect
 import sys
+import time
 import uuid
 from array import array
 from collections.abc import Awaitable, Callable
@@ -110,17 +111,30 @@ class AudioSocketBridge:
         output_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         playback_task = None
         output_started = False
+        connected_at = time.monotonic()
+        first_media_at = 0.0
+        last_media_at = 0.0
+        media_frames = 0
+        late_frames = 0
+        max_media_gap_ms = 0.0
+        first_emit_at = 0.0
+        first_playback_at = 0.0
 
         async def duplex_emit(response: bytes):
-            nonlocal output_started
+            nonlocal output_started, first_emit_at
             if not response:
                 return
             if not output_started and call_id:
                 self._response_audio[call_id]["turns"] += 1
                 output_started = True
+            if not first_emit_at:
+                first_emit_at = time.monotonic()
+                log.info("call_latency call=%s event=bridge_first_audio session_ms=%.1f",
+                         call_id, (first_emit_at - connected_at) * 1000)
             await output_queue.put(response)
 
         async def playback():
+            nonlocal first_playback_at
             deadline = asyncio.get_running_loop().time()
             while True:
                 response = await output_queue.get()
@@ -129,6 +143,12 @@ class AudioSocketBridge:
                 for start in range(0, len(response), 320):
                     chunk = response[start:start + 320]
                     writer.write(encode_frame(KIND_PCM_8K, chunk))
+                    if not first_playback_at:
+                        first_playback_at = time.monotonic()
+                        log.info(
+                            "call_latency call=%s event=first_playback bridge_queue_ms=%.1f session_ms=%.1f",
+                            call_id, (first_playback_at - first_emit_at) * 1000,
+                            (first_playback_at - connected_at) * 1000)
                     self.store.append_pcm(call_id, chunk)
                     await writer.drain()
                     stats = self._response_audio[call_id]
@@ -152,6 +172,7 @@ class AudioSocketBridge:
                     if len(payload) != 16:
                         raise ValueError("AudioSocket UUID must be 16 bytes")
                     call_id = str(uuid.UUID(bytes=payload))
+                    log.info("call_latency call=%s event=audiosocket_connected", call_id)
                     self.store.ensure_call(call_id)
                     self.store.start_recording(call_id)
                     self.active.add(call_id)
@@ -170,6 +191,19 @@ class AudioSocketBridge:
                     if not call_id:
                         raise ValueError("AudioSocket audio arrived before UUID")
                     self.store.append_pcm(call_id, payload)
+                    now = time.monotonic()
+                    media_frames += 1
+                    if not first_media_at:
+                        first_media_at = now
+                        log.info(
+                            "call_latency call=%s event=first_input_audio after_connect_ms=%.1f",
+                            call_id, (now - connected_at) * 1000)
+                    if last_media_at:
+                        gap_ms = (now - last_media_at) * 1000
+                        max_media_gap_ms = max(max_media_gap_ms, gap_ms)
+                        if gap_ms > 40:
+                            late_frames += 1
+                    last_media_at = now
                     if duplex_session is not None:
                         level = pcm_rms(payload)
                         now_speaking = level >= 250
@@ -183,6 +217,10 @@ class AudioSocketBridge:
                                     output_queue.get_nowait()
                                 except asyncio.QueueEmpty:
                                     break
+                            log.info(
+                                "call_latency call=%s event=local_barge_in level=%s response_active=%s",
+                                call_id, level,
+                                getattr(duplex_session, "response_active", False))
                             await duplex_session.interrupt()
                         duplex_speaking = now_speaking
                         await duplex_session.append_audio(payload)
@@ -300,6 +338,10 @@ class AudioSocketBridge:
                 playback_task.cancel()
                 await asyncio.gather(playback_task, return_exceptions=True)
             if call_id:
+                log.info(
+                    "call_latency call=%s event=call_summary duration_ms=%.1f media_frames=%s late_frames=%s max_media_gap_ms=%.1f",
+                    call_id, (time.monotonic() - connected_at) * 1000,
+                    media_frames, late_frames, max_media_gap_ms)
                 self.active.discard(call_id)
                 self.store.finish(call_id, status=status, error=error)
                 if self.call_finished is not None:
