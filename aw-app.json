@@ -92,16 +92,20 @@
         "id": "call-agent.main",
         "title": "Call Agent",
         "icon": "phone",
+        "component": "docker:aw-call-agent",
         "body": {
-          "type": "component"
+          "type": "component",
+          "component": "docker:aw-call-agent"
         }
       },
       {
         "id": "call-agent.settings",
         "title": "Call Agent \u2014 Settings",
         "icon": "settings",
+        "component": "docker:aw-call-agent",
         "body": {
           "type": "declarative",
+          "component": "docker:aw-call-agent",
           "spec": "windows/settings.json"
         }
       }
