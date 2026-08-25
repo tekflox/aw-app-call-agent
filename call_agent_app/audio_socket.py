@@ -146,6 +146,8 @@ class AudioSocketBridge:
                                         writer.write(encode_frame(KIND_PCM_8K, keepalive))
                                         await writer.drain()
                                 response = pending.result()
+                                loop = asyncio.get_running_loop()
+                                deadline = loop.time()
                                 for start in range(0, len(response), 320):
                                     chunk = response[start:start + 320]
                                     writer.write(encode_frame(KIND_PCM_8K, chunk))
@@ -155,9 +157,12 @@ class AudioSocketBridge:
                                     # reply in one TCP burst makes Asterisk
                                     # emit a matching RTP burst which real
                                     # softphone jitter buffers discard.  Pace
-                                    # 320-byte slin/8 kHz frames at 20 ms.
+                                    # 320-byte slin/8 kHz frames at 20 ms. Use
+                                    # absolute deadlines so scheduler jitter
+                                    # does not accumulate across a long reply.
                                     await writer.drain()
-                                    await asyncio.sleep(0.02)
+                                    deadline += 0.02
+                                    await asyncio.sleep(max(0, deadline - loop.time()))
                                 utterance.clear()
                                 speaking = False
                                 silence_ms = 0.0

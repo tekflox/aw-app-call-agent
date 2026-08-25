@@ -86,6 +86,9 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
+jitterbuffer=yes
+tos_audio=ef
+cos_audio=5
 """
 
 zadarma_enabled = env("TELEPHONY_ENABLED").lower() in {"1", "true", "yes", "on"}
@@ -126,6 +129,9 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
+jitterbuffer=yes
+tos_audio=ef
+cos_audio=5
 
 [zadarma-identify]
 type=identify
@@ -148,6 +154,7 @@ exten => {agent_extension},1,NoOp(Internal call to AW Call Agent)
  same => n,Playtones(440/250)
  same => n,Wait(0.3)
  same => n,StopPlaytones()
+ same => n,Set(JITTERBUFFER(adaptive)=default)
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
  same => n,Hangup()
@@ -160,6 +167,7 @@ exten => _X.,1,Answer()
  same => n,Playtones(440/250)
  same => n,Wait(0.3)
  same => n,StopPlaytones()
+ same => n,Set(JITTERBUFFER(adaptive)=default)
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
  same => n,Hangup()
