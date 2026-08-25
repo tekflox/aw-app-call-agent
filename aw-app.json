@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "call-agent",
   "name": "Call Agent",
-  "version": "0.32.1",
+  "version": "0.33.0",
   "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak \u2014 your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
   "tier": "container",
   "requires_ui_refresh": true,
@@ -243,7 +243,13 @@
       },
       "stt_realtime_delay": {
         "type": "string",
-        "enum": ["minimal", "low", "medium", "high", "xhigh"],
+        "enum": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
         "default": "low",
         "title": "Realtime transcript delay",
         "description": "Latency/accuracy tradeoff. Low is recommended for telephone audio."
