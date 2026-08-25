@@ -129,7 +129,7 @@ class OpenAIRealtimeVoiceSession:
         self.reader_task = asyncio.create_task(self._read_events())
 
     async def append_audio(self, pcm8k: bytes) -> None:
-        if self.ws is None:
+        if self.ws is None or not pcm8k:
             return
         await self.ws.send(json.dumps({
             "type": "input_audio_buffer.append",

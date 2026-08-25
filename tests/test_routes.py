@@ -755,6 +755,11 @@ def test_realtime_pcm_round_trip_preserves_phone_samples():
     assert min(samples) < -7000
 
 
+def test_realtime_pcm_conversion_accepts_empty_asterisk_keepalive():
+    assert pcm8k_to_pcm24k(b"") == b""
+    assert pcm24k_to_pcm8k(b"") == b""
+
+
 def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
     async def scenario(root):
         store = CallStore(root)
