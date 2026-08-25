@@ -304,6 +304,65 @@ class SipSoftphoneTester:
     def run(self, pcm: bytes, response_timeout: float = 180) -> SipTestResult:
         return self.run_conversation([pcm], response_timeout)
 
+    def run_barge_in(self, first: bytes, second: bytes,
+                     response_timeout: float = 180,
+                     response_started: Callable[[], bool] | None = None,
+                     turn_complete: Callable[[int], bool] | None = None
+                     ) -> SipTestResult:
+        """Speak again as soon as the first response starts playing.
+
+        RTP reception continues throughout, so this verifies that inbound
+        media is accepted while outbound model audio is still in flight.
+        """
+        started = time.monotonic()
+        self._register()
+        destination, _ = self._invite()
+        seq, timestamp, ssrc = random.randrange(65536), 0, random.randrange(2**32)
+        sent = 0
+        received = bytearray()
+        peak = 0
+
+        def send_pcm(pcm: bytes, trailing_silence: float = 0.7):
+            nonlocal seq, timestamp, sent, peak
+            payload = pcm16_to_ulaw(pcm) + b"\xff" * int(8000 * trailing_silence)
+            sent += len(payload)
+            for offset in range(0, len(payload), 160):
+                frame = payload[offset:offset + 160].ljust(160, b"\xff")
+                header = struct.pack("!BBHII", 0x80, 0, seq, timestamp, ssrc)
+                self.rtp.sendto(header + frame, destination)
+                seq, timestamp = (seq + 1) & 0xFFFF, (timestamp + 160) & 0xFFFFFFFF
+                try:
+                    packet, _ = self.rtp.recvfrom(2048)
+                except socket.timeout:
+                    packet = b""
+                if len(packet) > 12:
+                    audio = packet[12:]
+                    received.extend(audio)
+                    peak = max(peak, ulaw_peak(audio))
+                time.sleep(0.02)
+
+        send_pcm(first)
+        deadline = time.monotonic() + response_timeout
+        while time.monotonic() < deadline:
+            if response_started and response_started():
+                break
+            send_pcm(b"", 0.02)
+        else:
+            raise SipTestError("first response did not start before barge-in timeout")
+
+        # Do not wait for turn completion: this is the deliberate overlap.
+        send_pcm(second, 1.0)
+        deadline = time.monotonic() + response_timeout
+        while time.monotonic() < deadline:
+            if turn_complete and turn_complete(2):
+                break
+            send_pcm(b"", 0.02)
+        if turn_complete and not turn_complete(2):
+            raise SipTestError("second full-duplex turn was not completed")
+        self._hangup()
+        return SipTestResult(True, True, sent, len(received), peak,
+                             round(time.monotonic() - started, 2), 2)
+
 
 def generate_test_pcm(seconds: float = 1.5) -> bytes:
     """Deterministic fallback audio for unit/PBX tests (not used by live TTS)."""

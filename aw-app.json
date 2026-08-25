@@ -61,6 +61,9 @@
       "AW_CALL_TTS_OPENAI_MODEL": "${config.tts_openai_model}",
       "AW_CALL_TTS_OPENAI_VOICE": "${config.tts_openai_voice}",
       "OPENAI_API_KEY": "${config.openai_api_key}",
+      "AW_CALL_VOICE_RUNTIME": "${config.voice_runtime}",
+      "AW_CALL_REALTIME_MODEL": "${config.realtime_model}",
+      "AW_CALL_REALTIME_VOICE": "${config.realtime_voice}",
       "HF_HOME": "/app/data/models",
       "AW_CALL_SPEECH_PAUSE_MS": "${config.speech_pause_ms}",
       "AW_CALL_PROMPT_TEMPLATE": "${config.prompt_template}",
@@ -235,6 +238,25 @@
         "type": "number",
         "default": 650,
         "description": "How long a pause has to be before the caller is treated as having finished speaking, in milliseconds. Raise it if you think between sentences and the call keeps cutting you off."
+      },
+      "voice_runtime": {
+        "type": "string",
+        "enum": ["openai-realtime", "agents-platform-pipeline"],
+        "default": "openai-realtime",
+        "title": "Voice runtime",
+        "description": "OpenAI Realtime keeps one full-duplex audio session per call. The classic Agents Platform pipeline keeps separate STT, agent and TTS stages."
+      },
+      "realtime_model": {
+        "type": "string",
+        "default": "gpt-realtime-2.1-mini",
+        "title": "Realtime voice model",
+        "description": "OpenAI speech-to-speech model used by the full-duplex runtime."
+      },
+      "realtime_voice": {
+        "type": "string",
+        "default": "alloy",
+        "title": "Realtime voice",
+        "description": "Voice used by the full-duplex OpenAI Realtime session."
       },
       "stt_model": {
         "type": "string",

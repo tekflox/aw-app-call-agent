@@ -118,6 +118,9 @@ def resolve(config: dict | None) -> CallSettings:
         tts_openai_voice=(cfg.get("tts_openai_voice")
                           or defaults.tts_openai_voice).strip(),
         openai_api_key=(cfg.get("openai_api_key") or "").strip(),
+        voice_runtime=(cfg.get("voice_runtime") or defaults.voice_runtime).strip(),
+        realtime_model=(cfg.get("realtime_model") or defaults.realtime_model).strip(),
+        realtime_voice=(cfg.get("realtime_voice") or defaults.realtime_voice).strip(),
         speech_pause_ms=_num(cfg.get("speech_pause_ms"), defaults.speech_pause_ms),
         poll_interval_seconds=_num(cfg.get("poll_interval_seconds"),
                                    defaults.poll_interval_seconds),

@@ -41,6 +41,7 @@ from call_agent_app.sip_tester import pcm16_to_ulaw, ulaw_peak  # noqa: E402
 from call_agent_app.speech_pipeline import (  # noqa: E402
     OpenAIRealtimeTranscriber, SipSpeechPipeline,
 )
+from call_agent_app.realtime_voice import pcm8k_to_pcm24k, pcm24k_to_pcm8k  # noqa: E402
 
 CONFIG = {
     "agents_platform_base": "http://ap.test",
@@ -732,6 +733,93 @@ def test_audio_socket_vad_sends_agent_pcm_back_to_caller():
         assert bridge.response_audio_stats(str(call_uuid)) == {
             "turns": 1, "bytes": 320, "peak": 16,
         }
+        writer.write(encode_frame(KIND_HANGUP))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        await bridge.stop()
+        store.close()
+
+    with tempfile.TemporaryDirectory() as root:
+        asyncio.run(scenario(root))
+
+
+def test_realtime_pcm_round_trip_preserves_phone_samples():
+    source = b"".join(int(value).to_bytes(2, "little", signed=True)
+                      for value in (-12000, -4000, 0, 4000, 12000))
+    restored = pcm24k_to_pcm8k(pcm8k_to_pcm24k(source))
+    assert len(restored) == len(source)
+    samples = [int.from_bytes(restored[i:i + 2], "little", signed=True)
+               for i in range(0, len(restored), 2)]
+    assert max(samples) > 7000
+    assert min(samples) < -7000
+
+
+def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
+    async def scenario(root):
+        store = CallStore(root)
+        sessions = []
+
+        class FakeRealtimeSession:
+            def __init__(self, call_id, emit):
+                self.call_id, self.emit = call_id, emit
+                self.interrupts = 0
+                self.appends = 0
+                self.generating = False
+                self.second_arrived_during_generation = False
+                self.task = None
+
+            async def connect(self):
+                return None
+
+            async def append_audio(self, _pcm):
+                self.appends += 1
+                if self.appends == 1:
+                    self.generating = True
+
+                    async def generate():
+                        await self.emit(b"\x10\x00" * 160)
+                        await asyncio.sleep(0.25)
+                        await self.emit(b"\x20\x00" * 160)
+                        self.generating = False
+
+                    self.task = asyncio.create_task(generate())
+                elif self.generating:
+                    self.second_arrived_during_generation = True
+
+            async def interrupt(self):
+                self.interrupts += 1
+
+            async def close(self):
+                if self.task:
+                    self.task.cancel()
+                    await asyncio.gather(self.task, return_exceptions=True)
+
+        def factory(call_id, emit):
+            session = FakeRealtimeSession(call_id, emit)
+            sessions.append(session)
+            return session
+
+        bridge = AudioSocketBridge(store, port=0,
+                                   duplex_session_factory=factory)
+        await bridge.start()
+        call_uuid = uuid.uuid4()
+        reader, writer = await asyncio.open_connection("127.0.0.1", bridge.port)
+        writer.write(encode_frame(KIND_UUID, call_uuid.bytes))
+        writer.write(encode_frame(KIND_PCM_8K, b"\xff\x3f" * 160))
+        await writer.drain()
+        kind, first_audio = await asyncio.wait_for(read_frame(reader), 1)
+        assert kind == KIND_PCM_8K and first_audio
+
+        # End the first local speech edge, then start a second utterance while
+        # the fake model still has another response chunk pending.
+        writer.write(encode_frame(KIND_PCM_8K, b"\x00\x00" * 160))
+        writer.write(encode_frame(KIND_PCM_8K, b"\xff\x3f" * 160))
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        assert sessions[0].second_arrived_during_generation is True
+        assert sessions[0].interrupts >= 1
+
         writer.write(encode_frame(KIND_HANGUP))
         await writer.drain()
         writer.close()

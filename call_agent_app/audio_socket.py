@@ -59,6 +59,7 @@ class AudioSocketBridge:
                  utterance_handler: Callable[[str, bytes], Awaitable[bytes]] | None = None,
                  utterance_streamer=None,
                  audio_observer=None,
+                 duplex_session_factory=None,
                  speech_pause_ms: int = 1200,
                  call_finished: Callable[[str], None] | None = None):
         self.store = store
@@ -69,6 +70,7 @@ class AudioSocketBridge:
         self.utterance_handler = utterance_handler
         self.utterance_streamer = utterance_streamer
         self.audio_observer = audio_observer
+        self.duplex_session_factory = duplex_session_factory
         self.speech_pause_ms = speech_pause_ms
         self.call_finished = call_finished
         # Durable-enough, process-local evidence for the live SIP self-test.
@@ -103,6 +105,44 @@ class AudioSocketBridge:
         utterance = bytearray()
         speaking = False
         silence_ms = 0.0
+        duplex_session = None
+        duplex_speaking = False
+        output_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        playback_task = None
+        output_started = False
+
+        async def duplex_emit(response: bytes):
+            nonlocal output_started
+            if not response:
+                return
+            if not output_started and call_id:
+                self._response_audio[call_id]["turns"] += 1
+                output_started = True
+            await output_queue.put(response)
+
+        async def playback():
+            deadline = asyncio.get_running_loop().time()
+            while True:
+                response = await output_queue.get()
+                if response is None:
+                    return
+                for start in range(0, len(response), 320):
+                    chunk = response[start:start + 320]
+                    writer.write(encode_frame(KIND_PCM_8K, chunk))
+                    self.store.append_pcm(call_id, chunk)
+                    await writer.drain()
+                    stats = self._response_audio[call_id]
+                    stats["bytes"] += len(chunk)
+                    if chunk:
+                        samples = array("h")
+                        samples.frombytes(chunk[:len(chunk) - len(chunk) % 2])
+                        if sys.byteorder != "little":
+                            samples.byteswap()
+                        stats["peak"] = max(stats["peak"], max(
+                            (abs(value) for value in samples), default=0))
+                    deadline = max(deadline + 0.02,
+                                   asyncio.get_running_loop().time())
+                    await asyncio.sleep(max(0, deadline - asyncio.get_running_loop().time()))
         try:
             while True:
                 kind, payload = await read_frame(reader)
@@ -122,10 +162,31 @@ class AudioSocketBridge:
                             self._response_audio.pop(oldest, None)
                     if self.audio_observer is not None:
                         await self.audio_observer.start_call(call_id)
+                    if self.duplex_session_factory is not None:
+                        duplex_session = self.duplex_session_factory(call_id, duplex_emit)
+                        await duplex_session.connect()
+                        playback_task = asyncio.create_task(playback())
                 elif kind == KIND_PCM_8K:
                     if not call_id:
                         raise ValueError("AudioSocket audio arrived before UUID")
                     self.store.append_pcm(call_id, payload)
+                    if duplex_session is not None:
+                        level = pcm_rms(payload)
+                        now_speaking = level >= 250
+                        if now_speaking and not duplex_speaking and output_started:
+                            # Local barge-in is faster than waiting for the
+                            # remote speech_started event: discard queued audio
+                            # now and cancel model generation concurrently.
+                            output_started = False
+                            while not output_queue.empty():
+                                try:
+                                    output_queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    break
+                            await duplex_session.interrupt()
+                        duplex_speaking = now_speaking
+                        await duplex_session.append_audio(payload)
+                        continue
                     if self.utterance_handler is not None:
                         level = pcm_rms(payload)
                         frame_ms = len(payload) / 16.0
@@ -232,6 +293,12 @@ class AudioSocketBridge:
             status, error = "failed", str(exc)
             log.warning("AudioSocket call %s failed: %s", call_id or "unknown", exc)
         finally:
+            if duplex_session is not None:
+                await duplex_session.close()
+            if playback_task is not None:
+                await output_queue.put(None)
+                playback_task.cancel()
+                await asyncio.gather(playback_task, return_exceptions=True)
             if call_id:
                 self.active.discard(call_id)
                 self.store.finish(call_id, status=status, error=error)

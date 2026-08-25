@@ -60,6 +60,7 @@ class SipIntegrationTestRequest(BaseModel):
     first_text: str = "Eu gosto de abacaxi."
     follow_up_text: str = "Que fruta eu gosto?"
     expected_memory: str = "abacaxi"
+    barge_in: bool = False
 
 
 def build_routes(config_provider: Callable[[], dict] | None = None,
@@ -121,6 +122,9 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             "tts_provider": s.tts_provider,
             "tts_openai_model": s.tts_openai_model,
             "tts_openai_voice": s.tts_openai_voice,
+            "voice_runtime": s.voice_runtime,
+            "realtime_model": s.realtime_model,
+            "realtime_voice": s.realtime_voice,
             "has_openai_api_key": bool(s.openai_api_key),
             "speech_pause_ms": s.speech_pause_ms,
             "agents_platform_base": s.agents_platform_base,
@@ -301,8 +305,22 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
                 audio = bridge.response_audio_stats(fresh[0]["id"])
                 return text_ready and audio["turns"] >= turn
 
-            result = await asyncio.to_thread(
-                tester.run_conversation, prompts, 25, turn_complete)
+            def first_response_started() -> bool:
+                if not call_store or bridge is None or not hasattr(
+                        bridge, "response_audio_stats"):
+                    return False
+                fresh = [row for row in call_store.list(20)
+                         if row["id"] not in before]
+                return bool(fresh and bridge.response_audio_stats(
+                    fresh[0]["id"])["turns"] >= 1)
+
+            if request.barge_in:
+                result = await asyncio.to_thread(
+                    tester.run_barge_in, prompts[0], prompts[1], 25,
+                    first_response_started, turn_complete)
+            else:
+                result = await asyncio.to_thread(
+                    tester.run_conversation, prompts, 25, turn_complete)
             call = None
             if call_store:
                 for _ in range(100):
@@ -345,8 +363,11 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             "agent_text": call.get("agent_text", "") if call else "",
             "memory_verified": True,
             "voice_verified": True,
+            "full_duplex_verified": request.barge_in,
             "response_audio": response_audio if call_store else {},
-            "message": "SIP, two speech turns, agent memory and synthesized voice verified",
+            "message": ("SIP full-duplex barge-in, two speech turns and synthesized voice verified"
+                        if request.barge_in else
+                        "SIP, two speech turns, agent memory and synthesized voice verified"),
         }
 
     @app.post("/telephony/sip-integration-test", status_code=202)

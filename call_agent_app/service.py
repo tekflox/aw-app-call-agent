@@ -117,6 +117,9 @@ class CallSettings:
     tts_openai_model: str = "gpt-4o-mini-tts"
     tts_openai_voice: str = "alloy"
     openai_api_key: str = ""
+    voice_runtime: str = "openai-realtime"
+    realtime_model: str = "gpt-realtime-2.1-mini"
+    realtime_voice: str = "alloy"
     #: Silence, in ms, that ends an utterance. The browser's own end-of-speech
     #: detection is far too eager for someone who thinks mid-sentence, so the
     #: client does its own with this value.

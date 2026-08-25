@@ -11,6 +11,14 @@ back token by token, and hands the text to a TTS endpoint. Nothing about the
 protocol is audio — which is why the same socket serves the browser panel, the
 iOS `StreamingCallStore`, and anything else you point at it.
 
+SIP calls can instead use `voice_runtime=openai-realtime`. That path keeps one
+persistent OpenAI speech-to-speech session per call and runs AudioSocket input
+and output concurrently. New caller speech cancels queued/model audio without
+waiting for the reply to finish. Agents Platform still supplies the selected
+agent's prompt and capabilities; it is the control plane, not the RTP media
+loop. Use `/telephony/sip-integration-test` with `{"barge_in": true}` to test
+two overlapping spoken turns through REGISTER, INVITE, RTP and AudioSocket.
+
 Ported from `agentic-workspace/src/meta_display/call_agent.py` (itself the
 standalone `aw-call-agent` service, folded into the monolith in 2026-07). The
 port dropped meta_display's glasses/Watch broadcast — see `service.py`'s

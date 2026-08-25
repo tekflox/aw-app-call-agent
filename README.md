@@ -133,6 +133,16 @@ requires the app-scoped `openai_api_key` secret. The OpenAI model and voice
 fields remain editable so a release does not hard-code one account's model
 availability. Edge is TTS-only; it is not presented as an STT option.
 
+For natural telephone conversations, choose **OpenAI Realtime** as the voice
+runtime. Each SIP call then owns one persistent speech-to-speech session:
+AudioSocket forwards incoming PCM continuously while a separate playback task
+returns generated PCM to Asterisk. The caller can therefore speak over the
+answer; local voice onset immediately drops queued reply audio and cancels the
+current model response (barge-in). Agents Platform remains the control plane
+for the selected agent's instructions and capabilities, while it stays out of
+the live media path. The classic STT → agent → TTS pipeline remains available
+as a compatibility option.
+
 ## SIP telephony (Zadarma + Asterisk)
 
 Telephony is built into this app's control plane but is deliberately disabled

@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from .call_history import CallStore, default_data_dir
 from .audio_socket import AudioSocketBridge
 from .speech_pipeline import SipSpeechPipeline
+from .realtime_voice import OpenAIRealtimeVoiceSession
 from . import settings as settings_mod
 from .routes import build_routes
 
@@ -52,6 +53,9 @@ def _container_config() -> dict:
         "tts_openai_model": "AW_CALL_TTS_OPENAI_MODEL",
         "tts_openai_voice": "AW_CALL_TTS_OPENAI_VOICE",
         "openai_api_key": "OPENAI_API_KEY",
+        "voice_runtime": "AW_CALL_VOICE_RUNTIME",
+        "realtime_model": "AW_CALL_REALTIME_MODEL",
+        "realtime_voice": "AW_CALL_REALTIME_VOICE",
         "speech_pause_ms": "AW_CALL_SPEECH_PAUSE_MS",
         "poll_interval_seconds": "AW_CALL_POLL_INTERVAL",
         "max_poll_seconds": "AW_CALL_MAX_POLL_SECONDS",
@@ -82,13 +86,23 @@ def _container_config() -> dict:
 def build_standalone_app() -> FastAPI:
     store = CallStore(default_data_dir())
     pipeline = SipSpeechPipeline(lambda: settings_mod.resolve(_container_config()), store)
+    def duplex_factory(call_id, emit):
+        return OpenAIRealtimeVoiceSession(
+            call_id, settings_mod.resolve(_container_config()), store, emit)
+    effective = settings_mod.resolve(_container_config())
     bridge = AudioSocketBridge(
         store,
         host=os.environ.get("ASTERISK_AUDIO_SOCKET_HOST", "127.0.0.1"),
         port=int(os.environ.get("ASTERISK_AUDIO_SOCKET_PORT", "9019")),
         utterance_handler=pipeline.handle,
         utterance_streamer=pipeline.handle_stream,
-        audio_observer=pipeline,
+        # Realtime owns transcription and turn detection. Opening the classic
+        # observer here would create a second, unused OpenAI STT websocket.
+        audio_observer=(None if effective.voice_runtime == "openai-realtime"
+                        else pipeline),
+        duplex_session_factory=(duplex_factory
+                                if effective.voice_runtime == "openai-realtime"
+                                else None),
         speech_pause_ms=int(float(os.environ.get("AW_CALL_SPEECH_PAUSE_MS", "1200"))),
         call_finished=pipeline.forget,
     )
