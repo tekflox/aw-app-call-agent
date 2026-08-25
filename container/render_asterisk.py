@@ -86,7 +86,6 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-jitterbuffer=yes
 tos_audio=ef
 cos_audio=5
 """
@@ -129,7 +128,6 @@ direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-jitterbuffer=yes
 tos_audio=ef
 cos_audio=5
 

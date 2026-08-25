@@ -41,12 +41,12 @@ def test_explicit_external_address_does_not_query_dns(monkeypatch, tmp_path):
     assert "external_media_address=198.51.100.9" in config
 
 
-def test_softphone_media_uses_jitter_buffer_and_audio_qos(monkeypatch, tmp_path):
+def test_softphone_media_uses_dialplan_jitter_buffer_and_audio_qos(monkeypatch, tmp_path):
     monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
     config = _render(monkeypatch, tmp_path)
     extensions = (tmp_path / "extensions.conf").read_text()
 
-    assert "jitterbuffer=yes" in config
+    assert "jitterbuffer=yes" not in config
     assert "tos_audio=ef" in config
     assert "cos_audio=5" in config
     assert "Set(JITTERBUFFER(adaptive)=default)" in extensions
