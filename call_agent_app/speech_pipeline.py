@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 from .call_history import CallStore
 from .service import CallAgentService
+from .service import CallAgentError
 
 
 class SipSpeechPipeline:
@@ -34,6 +35,39 @@ class SipSpeechPipeline:
                 item.name, vad_filter=True, beam_size=3, language=language)
             return " ".join(segment.text.strip() for segment in segments).strip()
 
+    @staticmethod
+    def _wav_bytes(pcm: bytes) -> bytes:
+        import io
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(8000)
+            wav.writeframes(pcm)
+        return output.getvalue()
+
+    async def _transcribe_openai(self, pcm: bytes, language: str | None,
+                                 settings) -> str:
+        if not settings.openai_api_key:
+            raise CallAgentError(
+                "OpenAI STT is selected but `openai_api_key` is empty")
+        import httpx
+        data = {"model": settings.stt_openai_model}
+        if language:
+            data["language"] = language
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+                data=data,
+                files={"file": ("call.wav", self._wav_bytes(pcm), "audio/wav")},
+            )
+        if response.status_code >= 400:
+            raise CallAgentError(
+                f"OpenAI STT failed ({response.status_code}): "
+                f"{response.text[:200]}")
+        return str(response.json().get("text") or "").strip()
+
     async def _to_pcm(self, mp3: bytes) -> bytes:
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
@@ -55,7 +89,13 @@ class SipSpeechPipeline:
         # Greek and Dutch).  Settings already carry the caller language, so
         # use its ISO-639 prefix as Whisper's explicit language hint.
         language = (settings.default_voice_lang or "").split("-", 1)[0].lower() or None
-        transcript = await asyncio.to_thread(self._transcribe_sync, pcm, language)
+        if settings.stt_provider == "openai":
+            transcript = await self._transcribe_openai(pcm, language, settings)
+        elif settings.stt_provider == "faster-whisper":
+            transcript = await asyncio.to_thread(self._transcribe_sync, pcm, language)
+        else:
+            raise CallAgentError(
+                f"unsupported STT provider: {settings.stt_provider}")
         if not transcript:
             return b""
         service = CallAgentService(settings)

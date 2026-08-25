@@ -38,6 +38,7 @@ from call_agent_app.audio_socket import (  # noqa: E402
 from call_agent_app.call_history import CallStore  # noqa: E402
 from call_agent_app.__main__ import build_standalone_app  # noqa: E402
 from call_agent_app.sip_tester import pcm16_to_ulaw, ulaw_peak  # noqa: E402
+from call_agent_app.speech_pipeline import SipSpeechPipeline  # noqa: E402
 
 CONFIG = {
     "agents_platform_base": "http://ap.test",
@@ -488,6 +489,88 @@ def test_finished_call_is_not_reactivated_when_late_agent_text_arrives(tmp_path)
     assert row["transcript"] == "olá"
     assert row["agent_text"] == "oi"
     store.close()
+
+
+def test_provider_settings_are_resolved_and_secret_is_not_echoed():
+    cfg = dict(CONFIG, stt_provider="openai", tts_provider="openai",
+               stt_openai_model="whisper-1", tts_openai_model="tts-1",
+               tts_openai_voice="nova", openai_api_key="sk-secret")
+    resolved = settings_mod.resolve(cfg)
+    assert resolved.stt_provider == "openai"
+    assert resolved.tts_provider == "openai"
+    assert resolved.openai_api_key == "sk-secret"
+    api = TestClient(build_routes(config_provider=lambda: cfg))
+    body = api.get("/settings").json()
+    assert body["stt_provider"] == "openai"
+    assert body["tts_provider"] == "openai"
+    assert body["has_openai_api_key"] is True
+    assert "sk-secret" not in json.dumps(body)
+
+
+def test_openai_stt_builds_wav_and_returns_text(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"text": "olá do whisper"}
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_args):
+            return None
+        async def post(self, url, **kwargs):
+            captured.update(url=url, **kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    settings = CallSettings(stt_provider="openai", openai_api_key="sk-test",
+                            stt_openai_model="whisper-1")
+    store = CallStore(tmp_path)
+    pipeline = SipSpeechPipeline(lambda: settings, store)
+    text = asyncio.run(pipeline._transcribe_openai(
+        b"\x00\x00" * 800, "pt", settings))
+    assert text == "olá do whisper"
+    assert captured["url"].endswith("/audio/transcriptions")
+    assert captured["data"] == {"model": "whisper-1", "language": "pt"}
+    assert captured["files"]["file"][2] == "audio/wav"
+    assert captured["files"]["file"][1][:4] == b"RIFF"
+    assert "sk-test" in captured["headers"]["Authorization"]
+    store.close()
+
+
+def test_openai_tts_returns_mp3_bytes(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        content = b"fake-mp3"
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_args):
+            return None
+        async def post(self, url, **kwargs):
+            captured.update(url=url, **kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    settings = CallSettings(tts_provider="openai", openai_api_key="sk-test",
+                            tts_openai_model="gpt-4o-mini-tts",
+                            tts_openai_voice="alloy")
+    audio = asyncio.run(CallAgentService(settings).tts("**Olá**"))
+    assert audio == b"fake-mp3"
+    assert captured["url"].endswith("/audio/speech")
+    assert captured["json"]["input"] == "Olá"
+    assert captured["json"]["voice"] == "alloy"
 
 
 def test_sip_integration_test_requires_internal_credentials():

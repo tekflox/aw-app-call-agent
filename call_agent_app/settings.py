@@ -105,6 +105,15 @@ def resolve(config: dict | None) -> CallSettings:
         prompt_template=cfg.get("prompt_template") or defaults.prompt_template,
         default_voice_lang=(cfg.get("default_voice_lang")
                             or defaults.default_voice_lang).strip(),
+        stt_provider=(cfg.get("stt_provider") or defaults.stt_provider).strip(),
+        stt_openai_model=(cfg.get("stt_openai_model")
+                          or defaults.stt_openai_model).strip(),
+        tts_provider=(cfg.get("tts_provider") or defaults.tts_provider).strip(),
+        tts_openai_model=(cfg.get("tts_openai_model")
+                          or defaults.tts_openai_model).strip(),
+        tts_openai_voice=(cfg.get("tts_openai_voice")
+                          or defaults.tts_openai_voice).strip(),
+        openai_api_key=(cfg.get("openai_api_key") or "").strip(),
         speech_pause_ms=_num(cfg.get("speech_pause_ms"), defaults.speech_pause_ms),
         poll_interval_seconds=_num(cfg.get("poll_interval_seconds"),
                                    defaults.poll_interval_seconds),

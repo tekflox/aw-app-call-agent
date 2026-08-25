@@ -109,6 +109,12 @@ class CallSettings:
         "narration. Reply in the language the user spoke.\nUSER_MESSAGE:\n${text}"
     )
     default_voice_lang: str = "pt-BR"
+    stt_provider: str = "faster-whisper"
+    stt_openai_model: str = "gpt-4o-mini-transcribe"
+    tts_provider: str = "edge"
+    tts_openai_model: str = "gpt-4o-mini-tts"
+    tts_openai_voice: str = "alloy"
+    openai_api_key: str = ""
     #: Silence, in ms, that ends an utterance. The browser's own end-of-speech
     #: detection is far too eager for someone who thinks mid-sentence, so the
     #: client does its own with this value.
@@ -187,17 +193,46 @@ class CallAgentService:
             return fallback
 
     async def tts(self, text: str, lang: str = "") -> bytes:
-        """Speech via Microsoft Edge TTS, as raw MP3.
+        """Speech via the selected provider, returned as raw MP3.
 
         Deliberately a direct ``edge_tts`` call and deliberately not
         transcoded — see this module's docstring.
         """
-        import edge_tts
-
-        voice = pick_edge_voice(lang or self.settings.default_voice_lang)
         clean = strip_markdown(text)
         if not clean:
             raise CallAgentError("empty text")
+
+        if self.settings.tts_provider == "openai":
+            if not self.settings.openai_api_key:
+                raise CallAgentError(
+                    "OpenAI TTS is selected but `openai_api_key` is empty")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/audio/speech",
+                    headers={
+                        "Authorization": f"Bearer {self.settings.openai_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.settings.tts_openai_model,
+                        "voice": self.settings.tts_openai_voice,
+                        "input": clean,
+                        "response_format": "mp3",
+                    },
+                )
+            if response.status_code >= 400:
+                raise CallAgentError(
+                    f"OpenAI TTS failed ({response.status_code}): "
+                    f"{response.text[:200]}")
+            return response.content
+
+        if self.settings.tts_provider != "edge":
+            raise CallAgentError(
+                f"unsupported TTS provider: {self.settings.tts_provider}")
+
+        import edge_tts
+
+        voice = pick_edge_voice(lang or self.settings.default_voice_lang)
 
         buf = io.BytesIO()
         communicate = edge_tts.Communicate(clean, voice)

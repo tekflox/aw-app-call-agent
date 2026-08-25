@@ -121,6 +121,13 @@ blank one is diagnosable without reading a log.
 Pick an agent that answers in short spoken prose — a coding agent will narrate
 its tool calls at you.
 
+SIP speech providers are selected independently in Settings. STT can use the
+local `faster-whisper` model or OpenAI's audio transcription API; TTS can use
+Microsoft Edge or OpenAI's audio speech API. Selecting either OpenAI provider
+requires the app-scoped `openai_api_key` secret. The OpenAI model and voice
+fields remain editable so a release does not hard-code one account's model
+availability. Edge is TTS-only; it is not presented as an STT option.
+
 ## SIP telephony (Zadarma + Asterisk)
 
 Telephony is built into this app's control plane but is deliberately disabled

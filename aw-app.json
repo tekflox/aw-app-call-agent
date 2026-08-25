@@ -53,6 +53,12 @@
       "AW_CALL_AGENT_SLUG": "${config.agent_slug}",
       "AW_CALL_EXTERNAL_ID": "${config.external_id}",
       "AW_CALL_STT_MODEL": "${config.stt_model}",
+      "AW_CALL_STT_PROVIDER": "${config.stt_provider}",
+      "AW_CALL_STT_OPENAI_MODEL": "${config.stt_openai_model}",
+      "AW_CALL_TTS_PROVIDER": "${config.tts_provider}",
+      "AW_CALL_TTS_OPENAI_MODEL": "${config.tts_openai_model}",
+      "AW_CALL_TTS_OPENAI_VOICE": "${config.tts_openai_voice}",
+      "OPENAI_API_KEY": "${config.openai_api_key}",
       "HF_HOME": "/app/data/models",
       "AW_CALL_SPEECH_PAUSE_MS": "${config.speech_pause_ms}",
       "AW_CALL_PROMPT_TEMPLATE": "${config.prompt_template}",
@@ -180,6 +186,44 @@
         "default": "base",
         "title": "Server speech model",
         "description": "faster-whisper model used for SIP calls. 'base' is the low-cost default; use 'small' for better Portuguese on a stronger host."
+      },
+      "stt_provider": {
+        "type": "string",
+        "enum": ["faster-whisper", "openai"],
+        "default": "faster-whisper",
+        "title": "Speech-to-text provider",
+        "description": "Use local faster-whisper or the OpenAI transcription API. Edge is not an STT provider."
+      },
+      "stt_openai_model": {
+        "type": "string",
+        "default": "gpt-4o-mini-transcribe",
+        "title": "OpenAI STT model",
+        "description": "Model sent to /v1/audio/transcriptions when OpenAI STT is selected."
+      },
+      "tts_provider": {
+        "type": "string",
+        "enum": ["edge", "openai"],
+        "default": "edge",
+        "title": "Text-to-speech provider",
+        "description": "Use Microsoft Edge TTS or the OpenAI speech API."
+      },
+      "tts_openai_model": {
+        "type": "string",
+        "default": "gpt-4o-mini-tts",
+        "title": "OpenAI TTS model",
+        "description": "Model sent to /v1/audio/speech when OpenAI TTS is selected."
+      },
+      "tts_openai_voice": {
+        "type": "string",
+        "default": "alloy",
+        "title": "OpenAI TTS voice",
+        "description": "Voice used by OpenAI TTS, for example alloy."
+      },
+      "openai_api_key": {
+        "type": "string",
+        "x-secret": true,
+        "title": "OpenAI API key",
+        "description": "Required when either STT or TTS provider is OpenAI. Stored as an app secret."
       },
       "internal_sip_extension": {
         "type": "string",
