@@ -134,10 +134,23 @@ class SipSoftphoneTester:
         self.local_rtp_port = self.rtp.getsockname()[1]
         self.call_id = f"{uuid.uuid4()}@call-agent-test"
         self.from_tag = uuid.uuid4().hex[:10]
+        self._dialog_to_header: str | None = None
 
     def close(self):
+        self._hangup()
         self.sip.close()
         self.rtp.close()
+
+    def _hangup(self):
+        if not self._dialog_to_header:
+            return
+        uri = f"sip:{self.extension}@{self.host}"
+        try:
+            self._send("BYE", uri, 12, to=self._dialog_to_header)
+        except OSError:
+            pass
+        finally:
+            self._dialog_to_header = None
 
     def _send(self, method: str, uri: str, cseq: int, *, to: str,
               body: str = "", authorization: str = "", branch: str = ""):
@@ -203,6 +216,7 @@ class SipSoftphoneTester:
             raise SipTestError(f"INVITE failed with {code}")
         to_header = headers.get("to", to)
         self._send("ACK", uri, 11 if "challenge" in locals() else 10, to=to_header)
+        self._dialog_to_header = to_header
         port_match = re.search(r"m=audio\s+(\d+)", answer)
         addr_match = re.search(r"c=IN IP4\s+([^\s]+)", answer)
         if not port_match:
@@ -222,7 +236,11 @@ class SipSoftphoneTester:
         started = time.monotonic()
         self._register()
         destination, to_header = self._invite()
-        seq, timestamp, ssrc = random.randrange(65536), random.randrange(2**32), random.randrange(2**32)
+        # A legal arbitrary 32-bit RTP timestamp still made Asterisk's
+        # adaptive jitterbuffer occasionally calculate a huge negative first
+        # delay and discard the entire synthetic prompt. Starting at zero is
+        # equally valid and makes the live integration test deterministic.
+        seq, timestamp, ssrc = random.randrange(65536), 0, random.randrange(2**32)
         total_sent = 0
         total_received = bytearray()
         peak = 0
@@ -270,11 +288,7 @@ class SipSoftphoneTester:
                 raise SipTestError(f"agent turn {turn} was not recorded")
             total_received.extend(turn_received)
             peak = max(peak, turn_peak)
-        uri = f"sip:{self.extension}@{self.host}"
-        try:
-            self._send("BYE", uri, 12, to=to_header)
-        except OSError:
-            pass
+        self._hangup()
         return SipTestResult(True, True, total_sent, len(total_received), peak,
                              round(time.monotonic() - started, 2), len(prompts))
 
