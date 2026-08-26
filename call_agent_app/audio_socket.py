@@ -30,6 +30,9 @@ KIND_UUID = 0x01
 KIND_DTMF = 0x03
 KIND_PCM_8K = 0x10
 MAX_FRAME = 65535
+LOCAL_BARGE_IN_RMS = 1000
+LOCAL_BARGE_IN_RESET_RMS = 500
+LOCAL_BARGE_IN_CONFIRM_MS = 60.0
 
 
 def pcm_rms(payload: bytes) -> int:
@@ -109,7 +112,8 @@ class AudioSocketBridge:
         speaking = False
         silence_ms = 0.0
         duplex_session = None
-        duplex_speaking = False
+        barge_in_voice_ms = 0.0
+        barge_in_latched = False
         output_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         playback_task = None
         output_started = False
@@ -208,11 +212,21 @@ class AudioSocketBridge:
                     last_media_at = now
                     if duplex_session is not None:
                         level = pcm_rms(payload)
-                        now_speaking = level >= 250
-                        if now_speaking and not duplex_speaking and output_started:
-                            # Local barge-in is faster than waiting for the
-                            # remote speech_started event: discard queued audio
-                            # now and cancel model generation concurrently.
+                        frame_ms = len(payload) / 16.0
+                        if level >= LOCAL_BARGE_IN_RMS:
+                            barge_in_voice_ms += frame_ms
+                        elif level < LOCAL_BARGE_IN_RESET_RMS:
+                            barge_in_voice_ms = 0.0
+                            barge_in_latched = False
+                        response_active = bool(getattr(
+                            duplex_session, "response_active", False))
+                        if (output_started and response_active and
+                                not barge_in_latched and
+                                barge_in_voice_ms >= LOCAL_BARGE_IN_CONFIRM_MS):
+                            # Require sustained, clearly audible input before
+                            # treating it as barge-in. A single RTP spike or
+                            # speaker echo must not cancel/clear the response.
+                            barge_in_latched = True
                             output_started = False
                             while not output_queue.empty():
                                 try:
@@ -221,10 +235,8 @@ class AudioSocketBridge:
                                     break
                             latency_log.info(
                                 "call_latency call=%s event=local_barge_in level=%s response_active=%s",
-                                call_id, level,
-                                getattr(duplex_session, "response_active", False))
+                                call_id, level, response_active)
                             await duplex_session.interrupt()
-                        duplex_speaking = now_speaking
                         await duplex_session.append_audio(payload)
                         continue
                     if self.utterance_handler is not None:

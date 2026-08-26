@@ -771,6 +771,7 @@ def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
                 self.interrupts = 0
                 self.appends = 0
                 self.generating = False
+                self.response_active = False
                 self.second_arrived_during_generation = False
                 self.task = None
 
@@ -783,9 +784,11 @@ def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
                     self.generating = True
 
                     async def generate():
+                        self.response_active = True
                         await self.emit(b"\x10\x00" * 160)
                         await asyncio.sleep(0.25)
                         await self.emit(b"\x20\x00" * 160)
+                        self.response_active = False
                         self.generating = False
 
                     self.task = asyncio.create_task(generate())
@@ -811,7 +814,7 @@ def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
         call_uuid = uuid.uuid4()
         reader, writer = await asyncio.open_connection("127.0.0.1", bridge.port)
         writer.write(encode_frame(KIND_UUID, call_uuid.bytes))
-        writer.write(encode_frame(KIND_PCM_8K, b"\xff\x3f" * 160))
+        writer.write(encode_frame(KIND_PCM_8K, b"\xff\x3f" * 160) * 3)
         await writer.drain()
         kind, first_audio = await asyncio.wait_for(read_frame(reader), 1)
         assert kind == KIND_PCM_8K and first_audio
@@ -819,7 +822,15 @@ def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
         # End the first local speech edge, then start a second utterance while
         # the fake model still has another response chunk pending.
         writer.write(encode_frame(KIND_PCM_8K, b"\x00\x00" * 160))
+        # One loud frame is not enough to clear/cancel the response.
         writer.write(encode_frame(KIND_PCM_8K, b"\xff\x3f" * 160))
+        writer.write(encode_frame(KIND_PCM_8K, b"\x00\x00" * 160))
+        await writer.drain()
+        await asyncio.sleep(0.01)
+        assert sessions[0].interrupts == 0
+
+        # Sustained speech for 60 ms confirms an intentional interruption.
+        writer.write(encode_frame(KIND_PCM_8K, b"\xff\x3f" * 160) * 3)
         await writer.drain()
         await asyncio.sleep(0.05)
         assert sessions[0].second_arrived_during_generation is True
