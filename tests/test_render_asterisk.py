@@ -50,3 +50,4 @@ def test_softphone_media_uses_dialplan_jitter_buffer_and_audio_qos(monkeypatch, 
     assert "tos_audio=ef" in config
     assert "cos_audio=5" in config
     assert "Set(JITTERBUFFER(adaptive)=200,,60)" in extensions
+    assert "CHANNEL(rtpqos,audio,all)" in extensions

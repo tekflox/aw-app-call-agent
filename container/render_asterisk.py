@@ -155,6 +155,7 @@ exten => {agent_extension},1,NoOp(Internal call to AW Call Agent)
  same => n,Set(JITTERBUFFER(adaptive)=200,,60)
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
+ same => n,Verbose(1,RTP_QOS ${{CHANNEL(rtpqos,audio,all)}})
  same => n,Hangup()
 """
 if zadarma_enabled:
@@ -168,6 +169,7 @@ exten => _X.,1,Answer()
  same => n,Set(JITTERBUFFER(adaptive)=200,,60)
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
+ same => n,Verbose(1,RTP_QOS ${{CHANNEL(rtpqos,audio,all)}})
  same => n,Hangup()
 
 [call-agent-outbound]

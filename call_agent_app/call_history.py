@@ -51,7 +51,7 @@ class CallStore:
         self.recordings.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "calls.sqlite3"
         self._lock = threading.RLock()
-        self._writers: dict[str, wave.Wave_write] = {}
+        self._writers: dict[tuple[str, str], wave.Wave_write] = {}
         self._init_db()
 
     def _connect(self):
@@ -78,6 +78,9 @@ class CallStore:
                     error TEXT NOT NULL DEFAULT ''
                 )
             """)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
+            if "agent_recording_file" not in columns:
+                conn.execute("ALTER TABLE calls ADD COLUMN agent_recording_file TEXT")
 
     def ensure_call(self, call_id: str, direction: str = "inbound",
                     remote_number: str = "") -> dict:
@@ -90,34 +93,41 @@ class CallStore:
             )
         return self.get(call_id)
 
-    def start_recording(self, call_id: str) -> Path:
+    def start_recording(self, call_id: str, direction: str = "in") -> Path:
         with self._lock:
-            if call_id in self._writers:
-                return self.recordings / f"{call_id}.wav"
+            key = (call_id, direction)
+            suffix = "" if direction == "in" else "-agent"
+            if key in self._writers:
+                return self.recordings / f"{call_id}{suffix}.wav"
             self.ensure_call(call_id)
-            path = self.recordings / f"{call_id}.wav"
+            path = self.recordings / f"{call_id}{suffix}.wav"
             writer = wave.open(str(path), "wb")
             writer.setnchannels(1)
             writer.setsampwidth(2)
             writer.setframerate(8000)
-            self._writers[call_id] = writer
+            self._writers[key] = writer
             with self._connect() as conn:
-                conn.execute("UPDATE calls SET recording_file=? WHERE id=?",
+                column = ("recording_file" if direction == "in"
+                          else "agent_recording_file")
+                conn.execute(f"UPDATE calls SET {column}=? WHERE id=?",
                              (path.name, call_id))
             return path
 
-    def append_pcm(self, call_id: str, pcm: bytes):
+    def append_pcm(self, call_id: str, pcm: bytes, direction: str = "in"):
         if not pcm:
             return
         with self._lock:
-            if call_id not in self._writers:
-                self.start_recording(call_id)
-            self._writers[call_id].writeframesraw(pcm)
-            with self._connect() as conn:
-                conn.execute(
-                    "UPDATE calls SET sample_bytes=sample_bytes+? WHERE id=?",
-                    (len(pcm), call_id),
-                )
+            key = (call_id, direction)
+            if key not in self._writers:
+                self.start_recording(call_id, direction)
+            self._writers[key].writeframesraw(pcm)
+            # Duration follows caller audio only; agent audio has its own WAV.
+            if direction == "in":
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE calls SET sample_bytes=sample_bytes+? WHERE id=?",
+                        (len(pcm), call_id),
+                    )
 
     def append_text(self, call_id: str, *, transcript: str = "",
                     agent_text: str = "", run_id: str = ""):
@@ -140,9 +150,10 @@ class CallStore:
 
     def finish(self, call_id: str, status: str = "completed", error: str = ""):
         with self._lock:
-            writer = self._writers.pop(call_id, None)
-            if writer is not None:
-                writer.close()
+            for direction in ("in", "out"):
+                writer = self._writers.pop((call_id, direction), None)
+                if writer is not None:
+                    writer.close()
             with self._connect() as conn:
                 row = conn.execute("SELECT sample_bytes FROM calls WHERE id=?",
                                    (call_id,)).fetchone()

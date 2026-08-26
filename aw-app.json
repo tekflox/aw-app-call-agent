@@ -236,7 +236,7 @@
       },
       "speech_pause_ms": {
         "type": "number",
-        "default": 650,
+        "default": 400,
         "description": "How long a pause has to be before the caller is treated as having finished speaking, in milliseconds. Raise it if you think between sentences and the call keeps cutting you off."
       },
       "voice_runtime": {

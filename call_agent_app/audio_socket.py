@@ -33,6 +33,8 @@ MAX_FRAME = 65535
 LOCAL_BARGE_IN_RMS = 1000
 LOCAL_BARGE_IN_RESET_RMS = 500
 LOCAL_BARGE_IN_CONFIRM_MS = 60.0
+LOCAL_BARGE_IN_RELEASE_MS = 300.0
+RECORD_BATCH_BYTES = 16000
 
 
 def pcm_rms(payload: bytes) -> int:
@@ -43,6 +45,34 @@ def pcm_rms(payload: bytes) -> int:
     if sys.byteorder != "little":
         samples.byteswap()
     return int(math.sqrt(sum(value * value for value in samples) / len(samples)))
+
+
+class BargeInDetector:
+    """Hysteretic voice edge detector resilient to isolated and noisy frames."""
+
+    def __init__(self):
+        self.voice_ms = 0.0
+        self.release_ms = 0.0
+        self.latched = False
+
+    def observe(self, level: int, frame_ms: float) -> bool:
+        if level >= LOCAL_BARGE_IN_RMS:
+            self.voice_ms += frame_ms
+            self.release_ms = 0.0
+        elif level < LOCAL_BARGE_IN_RESET_RMS:
+            self.voice_ms = 0.0
+            self.release_ms = 0.0
+            self.latched = False
+        else:
+            self.release_ms += frame_ms
+            if self.release_ms >= LOCAL_BARGE_IN_RELEASE_MS:
+                self.latched = False
+                self.voice_ms = 0.0
+        if (not self.latched and
+                self.voice_ms >= LOCAL_BARGE_IN_CONFIRM_MS):
+            self.latched = True
+            return True
+        return False
 
 
 async def read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
@@ -112,10 +142,17 @@ class AudioSocketBridge:
         speaking = False
         silence_ms = 0.0
         duplex_session = None
-        barge_in_voice_ms = 0.0
-        barge_in_latched = False
-        output_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        barge_in = BargeInDetector()
+        output_queue: asyncio.Queue[tuple[str, bytes] | None] = asyncio.Queue(maxsize=200)
+        record_queue: asyncio.Queue[tuple[str, bytes] | None] = asyncio.Queue(maxsize=500)
         playback_task = None
+        recorder_task = None
+        loop_monitor_task = None
+        cancelled_responses: set[str] = set()
+        recording_drops = 0
+        output_drops = 0
+        playback_underruns = 0
+        loop_lags_ms: list[float] = []
         output_started = False
         connected_at = time.monotonic()
         first_media_at = 0.0
@@ -126,9 +163,52 @@ class AudioSocketBridge:
         first_emit_at = 0.0
         first_playback_at = 0.0
 
+        def record(direction: str, pcm: bytes) -> None:
+            nonlocal recording_drops
+            try:
+                record_queue.put_nowait((direction, pcm))
+            except asyncio.QueueFull:
+                recording_drops += 1
+
+        async def recorder():
+            buffers = {"in": bytearray(), "out": bytearray()}
+            while True:
+                item = await record_queue.get()
+                if item is None:
+                    break
+                direction, pcm = item
+                buffers[direction].extend(pcm)
+                if len(buffers[direction]) >= RECORD_BATCH_BYTES:
+                    batch = bytes(buffers[direction])
+                    buffers[direction].clear()
+                    await asyncio.to_thread(
+                        self.store.append_pcm, call_id, batch, direction)
+            for direction, buffer in buffers.items():
+                if buffer:
+                    await asyncio.to_thread(
+                        self.store.append_pcm, call_id, bytes(buffer), direction)
+
+        async def monitor_loop():
+            deadline = asyncio.get_running_loop().time()
+            while True:
+                deadline += 0.02
+                await asyncio.sleep(max(0, deadline - asyncio.get_running_loop().time()))
+                lag = max(0.0, (asyncio.get_running_loop().time() - deadline) * 1000)
+                loop_lags_ms.append(lag)
+                if lag > 40:
+                    latency_log.info(
+                        "call_latency call=%s event=event_loop_stall lag_ms=%.1f",
+                        call_id, lag)
+                    deadline = asyncio.get_running_loop().time()
+
         async def duplex_emit(response: bytes):
-            nonlocal output_started, first_emit_at
+            nonlocal output_started, first_emit_at, output_drops
             if not response:
+                return
+            response_id = str(getattr(
+                duplex_session, "output_response_id", "") or
+                getattr(duplex_session, "response_id", "") or "")
+            if response_id and response_id in cancelled_responses:
                 return
             if not output_started and call_id:
                 self._response_audio[call_id]["turns"] += 1
@@ -137,16 +217,33 @@ class AudioSocketBridge:
                 first_emit_at = time.monotonic()
                 latency_log.info("call_latency call=%s event=bridge_first_audio session_ms=%.1f",
                          call_id, (first_emit_at - connected_at) * 1000)
-            await output_queue.put(response)
+            try:
+                output_queue.put_nowait((response_id, response))
+            except asyncio.QueueFull:
+                output_drops += 1
+                latency_log.info(
+                    "call_latency call=%s event=output_queue_drop dropped=%s",
+                    call_id, output_drops)
 
         async def playback():
-            nonlocal first_playback_at
+            nonlocal first_playback_at, playback_underruns
             deadline = asyncio.get_running_loop().time()
             while True:
-                response = await output_queue.get()
-                if response is None:
+                wait_started = time.monotonic()
+                item = await output_queue.get()
+                wait_ms = (time.monotonic() - wait_started) * 1000
+                if item is None:
                     return
+                if (getattr(duplex_session, "response_active", False) and
+                        first_playback_at and wait_ms > 40):
+                    playback_underruns += 1
+                    latency_log.info(
+                        "call_latency call=%s event=playback_underrun wait_ms=%.1f queue_depth=%s",
+                        call_id, wait_ms, output_queue.qsize())
+                response_id, response = item
                 for start in range(0, len(response), 320):
+                    if response_id and response_id in cancelled_responses:
+                        break
                     chunk = response[start:start + 320]
                     writer.write(encode_frame(KIND_PCM_8K, chunk))
                     if not first_playback_at:
@@ -155,7 +252,7 @@ class AudioSocketBridge:
                             "call_latency call=%s event=first_playback bridge_queue_ms=%.1f session_ms=%.1f",
                             call_id, (first_playback_at - first_emit_at) * 1000,
                             (first_playback_at - connected_at) * 1000)
-                    self.store.append_pcm(call_id, chunk)
+                    record("out", chunk)
                     await writer.drain()
                     stats = self._response_audio[call_id]
                     stats["bytes"] += len(chunk)
@@ -192,11 +289,16 @@ class AudioSocketBridge:
                     if self.duplex_session_factory is not None:
                         duplex_session = self.duplex_session_factory(call_id, duplex_emit)
                         await duplex_session.connect()
+                        recorder_task = asyncio.create_task(recorder())
+                        loop_monitor_task = asyncio.create_task(monitor_loop())
                         playback_task = asyncio.create_task(playback())
                 elif kind == KIND_PCM_8K:
                     if not call_id:
                         raise ValueError("AudioSocket audio arrived before UUID")
-                    self.store.append_pcm(call_id, payload)
+                    if recorder_task is not None:
+                        record("in", payload)
+                    else:
+                        self.store.append_pcm(call_id, payload)
                     now = time.monotonic()
                     media_frames += 1
                     if not first_media_at:
@@ -213,21 +315,19 @@ class AudioSocketBridge:
                     if duplex_session is not None:
                         level = pcm_rms(payload)
                         frame_ms = len(payload) / 16.0
-                        if level >= LOCAL_BARGE_IN_RMS:
-                            barge_in_voice_ms += frame_ms
-                        elif level < LOCAL_BARGE_IN_RESET_RMS:
-                            barge_in_voice_ms = 0.0
-                            barge_in_latched = False
                         response_active = bool(getattr(
                             duplex_session, "response_active", False))
+                        confirmed_barge_in = barge_in.observe(level, frame_ms)
                         if (output_started and response_active and
-                                not barge_in_latched and
-                                barge_in_voice_ms >= LOCAL_BARGE_IN_CONFIRM_MS):
+                                confirmed_barge_in):
                             # Require sustained, clearly audible input before
                             # treating it as barge-in. A single RTP spike or
                             # speaker echo must not cancel/clear the response.
-                            barge_in_latched = True
                             output_started = False
+                            response_id = str(getattr(
+                                duplex_session, "response_id", "") or "")
+                            if response_id:
+                                cancelled_responses.add(response_id)
                             while not output_queue.empty():
                                 try:
                                     output_queue.get_nowait()
@@ -351,11 +451,25 @@ class AudioSocketBridge:
                 await output_queue.put(None)
                 playback_task.cancel()
                 await asyncio.gather(playback_task, return_exceptions=True)
+            if recorder_task is not None:
+                await record_queue.put(None)
+                await asyncio.gather(recorder_task, return_exceptions=True)
+            if loop_monitor_task is not None:
+                loop_monitor_task.cancel()
+                await asyncio.gather(loop_monitor_task, return_exceptions=True)
             if call_id:
+                sorted_lags = sorted(loop_lags_ms)
+                def percentile(ratio: float) -> float:
+                    if not sorted_lags:
+                        return 0.0
+                    return sorted_lags[min(len(sorted_lags) - 1,
+                                           int(len(sorted_lags) * ratio))]
                 latency_log.info(
-                    "call_latency call=%s event=call_summary duration_ms=%.1f media_frames=%s late_frames=%s max_media_gap_ms=%.1f",
+                    "call_latency call=%s event=call_summary duration_ms=%.1f media_frames=%s late_frames=%s max_media_gap_ms=%.1f loop_lag_p95_ms=%.1f loop_lag_p99_ms=%.1f recording_drops=%s output_drops=%s playback_underruns=%s",
                     call_id, (time.monotonic() - connected_at) * 1000,
-                    media_frames, late_frames, max_media_gap_ms)
+                    media_frames, late_frames, max_media_gap_ms,
+                    percentile(0.95), percentile(0.99), recording_drops,
+                    output_drops, playback_underruns)
                 self.active.discard(call_id)
                 self.store.finish(call_id, status=status, error=error)
                 if self.call_finished is not None:

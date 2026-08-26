@@ -136,6 +136,7 @@ exten => _X.,1,NoOp(Inbound Zadarma call to ${{EXTEN}})
  same => n,Answer()
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},{s.audio_socket_host}:{s.audio_socket_port})
+ same => n,Verbose(1,RTP_QOS ${{CHANNEL(rtpqos,audio,all)}})
  same => n,Hangup()
 
 [call-agent-outbound]
@@ -148,6 +149,7 @@ exten => _X.,1,NoOp(Call Agent outbound call to ${{EXTEN}})
 exten => s,1,NoOp(Connect outbound call to Call Agent AudioSocket)
  same => n,Set(CALL_ID=${{IF($["${{CALL_ID}}"=""]?${{UUID()}}:${{CALL_ID}})}})
  same => n,AudioSocket(${{CALL_ID}},{s.audio_socket_host}:{s.audio_socket_port})
+ same => n,Verbose(1,RTP_QOS ${{CHANNEL(rtpqos,audio,all)}})
  same => n,Hangup()
 """
     manager = f"""[general]

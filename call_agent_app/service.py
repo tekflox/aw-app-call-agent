@@ -123,7 +123,7 @@ class CallSettings:
     #: Silence, in ms, that ends an utterance. The browser's own end-of-speech
     #: detection is far too eager for someone who thinks mid-sentence, so the
     #: client does its own with this value.
-    speech_pause_ms: float = 650.0
+    speech_pause_ms: float = 400.0
     poll_interval_seconds: float = 0.1
     max_poll_seconds: float = 300.0
     #: Where the base/token actually came from — surfaced by GET /settings so

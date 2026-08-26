@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import sys
 import tempfile
 import uuid
@@ -32,8 +33,8 @@ from call_agent_app.telephony import (  # noqa: E402
     render_asterisk_config,
 )
 from call_agent_app.audio_socket import (  # noqa: E402
-    AudioSocketBridge, KIND_HANGUP, KIND_PCM_8K, KIND_UUID, encode_frame,
-    read_frame,
+    AudioSocketBridge, BargeInDetector, KIND_HANGUP, KIND_PCM_8K, KIND_UUID,
+    encode_frame, read_frame,
 )
 from call_agent_app.call_history import CallStore  # noqa: E402
 from call_agent_app.__main__ import build_standalone_app  # noqa: E402
@@ -262,7 +263,7 @@ def test_ws_set_agent_ignores_a_no_op(client):
 
 
 def test_settings_exposes_the_speech_pause(client):
-    assert client.get("/settings").json()["speech_pause_ms"] == 650.0
+    assert client.get("/settings").json()["speech_pause_ms"] == 400.0
 
 
 # ---- SIP/Asterisk control plane -------------------------------------------
@@ -291,6 +292,7 @@ def test_asterisk_preview_redacts_every_secret():
     assert "password=***" in rendered
     assert "secret=***" in rendered
     assert "AudioSocket(" in files["extensions.conf"]
+    assert "CHANNEL(rtpqos,audio,all)" in files["extensions.conf"]
     assert "PJSIP/${EXTEN}@zadarma" in files["extensions.conf"]
 
 
@@ -745,19 +747,69 @@ def test_audio_socket_vad_sends_agent_pcm_back_to_caller():
 
 
 def test_realtime_pcm_round_trip_preserves_phone_samples():
-    source = b"".join(int(value).to_bytes(2, "little", signed=True)
-                      for value in (-12000, -4000, 0, 4000, 12000))
+    source = b"".join(
+        int(12000 * math.sin(2 * math.pi * 1000 * i / 8000)).to_bytes(
+            2, "little", signed=True)
+        for i in range(800))
     restored = pcm24k_to_pcm8k(pcm8k_to_pcm24k(source))
     assert len(restored) == len(source)
     samples = [int.from_bytes(restored[i:i + 2], "little", signed=True)
-               for i in range(0, len(restored), 2)]
-    assert max(samples) > 7000
-    assert min(samples) < -7000
+               for i in range(100, len(restored), 2)]
+    rms = math.sqrt(sum(value * value for value in samples) / len(samples))
+    assert rms > 6000
+
+
+def test_realtime_downsample_suppresses_out_of_band_aliasing():
+    def tone(frequency):
+        return b"".join(
+            int(12000 * math.sin(2 * math.pi * frequency * i / 24000)).to_bytes(
+                2, "little", signed=True)
+            for i in range(2400))
+
+    def rms(pcm):
+        samples = [int.from_bytes(pcm[i:i + 2], "little", signed=True)
+                   for i in range(200, len(pcm), 2)]
+        return math.sqrt(sum(value * value for value in samples) / len(samples))
+
+    assert rms(pcm24k_to_pcm8k(tone(7000))) < rms(
+        pcm24k_to_pcm8k(tone(1000))) * 0.35
 
 
 def test_realtime_pcm_conversion_accepts_empty_asterisk_keepalive():
     assert pcm8k_to_pcm24k(b"") == b""
     assert pcm24k_to_pcm8k(b"") == b""
+
+
+def test_call_store_records_caller_and_agent_audio_separately():
+    with tempfile.TemporaryDirectory() as root:
+        store = CallStore(root)
+        call_id = str(uuid.uuid4())
+        store.ensure_call(call_id)
+        store.append_pcm(call_id, b"\x01\x00" * 160, "in")
+        store.append_pcm(call_id, b"\x02\x00" * 160, "out")
+        store.finish(call_id)
+
+        row = store.get(call_id)
+        assert row["recording_file"] == f"{call_id}.wav"
+        assert row["agent_recording_file"] == f"{call_id}-agent.wav"
+        assert row["sample_bytes"] == 320
+        with wave.open(str(Path(root) / "recordings" /
+                           row["agent_recording_file"]), "rb") as recording:
+            assert recording.readframes(160) == b"\x02\x00" * 160
+        store.close()
+
+
+def test_barge_in_rearms_above_silence_floor_after_noisy_release():
+    detector = BargeInDetector()
+    assert detector.observe(1400, 20) is False
+    assert detector.observe(1400, 20) is False
+    assert detector.observe(1400, 20) is True
+    # A realistic noise floor in the hysteresis band eventually rearms it.
+    for _ in range(15):
+        assert detector.observe(650, 20) is False
+    assert detector.observe(1400, 20) is False
+    assert detector.observe(1400, 20) is False
+    assert detector.observe(1400, 20) is True
 
 
 def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
@@ -772,6 +824,8 @@ def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
                 self.appends = 0
                 self.generating = False
                 self.response_active = False
+                self.response_id = ""
+                self.output_response_id = ""
                 self.second_arrived_during_generation = False
                 self.task = None
 
@@ -785,7 +839,11 @@ def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
 
                     async def generate():
                         self.response_active = True
-                        await self.emit(b"\x10\x00" * 160)
+                        self.response_id = "resp-first"
+                        self.output_response_id = self.response_id
+                        # One large WS delta verifies playback checks the
+                        # response id inside the 20 ms chunk loop.
+                        await self.emit(b"\x10\x00" * 160 * 20)
                         await asyncio.sleep(0.25)
                         await self.emit(b"\x20\x00" * 160)
                         self.response_active = False
@@ -835,6 +893,16 @@ def test_full_duplex_barge_in_accepts_second_audio_while_reply_generates():
         await asyncio.sleep(0.05)
         assert sessions[0].second_arrived_during_generation is True
         assert sessions[0].interrupts >= 1
+
+        residual_frames = 0
+        while True:
+            try:
+                kind, _ = await asyncio.wait_for(read_frame(reader), 0.04)
+            except asyncio.TimeoutError:
+                break
+            if kind == KIND_PCM_8K:
+                residual_frames += 1
+        assert residual_frames <= 2
 
         writer.write(encode_frame(KIND_HANGUP))
         await writer.drain()
