@@ -42,7 +42,10 @@ from call_agent_app.sip_tester import pcm16_to_ulaw, ulaw_peak  # noqa: E402
 from call_agent_app.speech_pipeline import (  # noqa: E402
     OpenAIRealtimeTranscriber, SipSpeechPipeline,
 )
-from call_agent_app.realtime_voice import pcm8k_to_pcm24k, pcm24k_to_pcm8k  # noqa: E402
+from call_agent_app.realtime_voice import (  # noqa: E402
+    OpenAIRealtimeVoiceSession, REALTIME_CRISPAL_TARGET,
+    REALTIME_CRISPAL_TOOLS, pcm8k_to_pcm24k, pcm24k_to_pcm8k,
+)
 
 CONFIG = {
     "agents_platform_base": "http://ap.test",
@@ -778,6 +781,65 @@ def test_realtime_downsample_suppresses_out_of_band_aliasing():
 def test_realtime_pcm_conversion_accepts_empty_asterisk_keepalive():
     assert pcm8k_to_pcm24k(b"") == b""
     assert pcm24k_to_pcm8k(b"") == b""
+
+
+def test_realtime_control_plane_uses_only_scoped_crispal_mcp(monkeypatch):
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.body
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **_kwargs):
+            if "/api/agents/" in url:
+                return FakeResponse({
+                    "system_prompt": "Help the caller.",
+                    "capabilities": "Can use Crispal.",
+                    "agent_config_slug": "agent-config-call-agent-tools",
+                })
+            return FakeResponse({
+                "mcp_config": {"servers": {"aw-gateway": {
+                    "url": "https://mcp.example/mcp/aw-crispal",
+                    "headers": {"Authorization": "Bearer secret"},
+                }}},
+            })
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    settings = CallSettings(
+        agents_platform_base="http://agents.test",
+        agents_platform_token="platform-token",
+        agent_slug="call-agent-openai",
+    )
+    with tempfile.TemporaryDirectory() as root:
+        store = CallStore(root)
+
+        async def emit(_pcm):
+            return None
+
+        session = OpenAIRealtimeVoiceSession("call-1", settings, store, emit)
+        instructions, tools = asyncio.run(session._control_plane())
+        store.close()
+
+    assert REALTIME_CRISPAL_TARGET in instructions
+    assert len(tools) == 1
+    assert tools[0]["server_url"].endswith("/mcp/aw-crispal")
+    assert tools[0]["allowed_tools"] == REALTIME_CRISPAL_TOOLS
+    assert tools[0]["require_approval"] == "never"
+    assert tools[0]["headers"]["Authorization"] == "Bearer secret"
 
 
 def test_call_store_records_caller_and_agent_audio_separately():

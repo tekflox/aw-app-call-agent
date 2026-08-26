@@ -21,6 +21,13 @@ log = logging.getLogger("aw_apps.call_agent.realtime_voice")
 log.setLevel(logging.INFO)
 latency_log = logging.getLogger("uvicorn.error")
 
+REALTIME_CRISPAL_TOOLS = [
+    "agent_crispal_haiku",
+    "agent_crispal_sonnet",
+    "agent_crispal_social_sonnet",
+]
+REALTIME_CRISPAL_TARGET = "call-agent-crispal"
+
 
 class PCMResampler:
     """Stateful C-backed telephone/Realtime resampler."""
@@ -92,10 +99,10 @@ class OpenAIRealtimeVoiceSession:
         latency_log.info("call_latency %s", " ".join(
             f"{key}={value}" for key, value in fields.items()))
 
-    async def _instructions(self) -> str:
+    async def _control_plane(self) -> tuple[str, list[dict]]:
         base = self.settings.prompt_template.replace("${text}", "").strip()
         if not self.settings.agents_platform_base:
-            return base
+            return base, []
         headers = ({"Authorization": f"Bearer {self.settings.agents_platform_token}"}
                    if self.settings.agents_platform_token else {})
         try:
@@ -108,16 +115,53 @@ class OpenAIRealtimeVoiceSession:
         except Exception as exc:
             log.warning("could not load realtime control plane for %s: %s",
                         self.settings.agent_slug, exc)
-            return base
+            return base, []
         system = str(agent.get("system_prompt") or "").strip()
         capabilities = str(agent.get("capabilities") or "").strip()
-        return "\n\n".join(part for part in (
+        instructions = "\n\n".join(part for part in (
             system, capabilities, base,
             "You are in a live full-duplex telephone call. Respond briefly in "
             "the caller's language. If interrupted, stop immediately and answer "
             "the newest utterance. Never promise to use a tool later; use it now "
-            "or clearly say it is unavailable.",
+            "or clearly say it is unavailable. For Crispal store questions or "
+            "actions, use the most appropriate Crispal MCP agent. Always pass "
+            f"target_slug='{REALTIME_CRISPAL_TARGET}'. Briefly acknowledge that "
+            "you are checking, then report the tool result in natural spoken prose.",
         ) if part)
+
+        config_slug = str(agent.get("agent_config_slug") or "").strip()
+        if not config_slug:
+            return instructions, []
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.get(
+                    f"{self.settings.agents_platform_base.rstrip('/')}/api/agent-configs/"
+                    f"{config_slug}", headers=headers)
+                response.raise_for_status()
+                config = response.json()
+        except Exception as exc:
+            log.warning("could not load realtime MCP config %s: %s", config_slug, exc)
+            return instructions, []
+
+        servers = ((config.get("mcp_config") or {}).get("servers") or {})
+        server = servers.get("aw-gateway") or {}
+        server_url = str(server.get("url") or "").strip()
+        if not server_url or not server_url.rstrip("/").endswith("/mcp/aw-crispal"):
+            log.warning("realtime MCP disabled: agent config is not scoped to aw-crispal")
+            return instructions, []
+        tool = {
+            "type": "mcp",
+            "server_label": "aw_crispal",
+            "server_description": "Scoped Crispal production agents for store operations.",
+            "server_url": server_url,
+            "headers": dict(server.get("headers") or {}),
+            "allowed_tools": REALTIME_CRISPAL_TOOLS,
+            # The scoped gateway owns its own approval policy. Asking OpenAI
+            # for a second approval would stall a live phone call because
+            # there is no visual approval surface on the audio channel.
+            "require_approval": "never",
+        }
+        return instructions, [tool]
 
     async def connect(self) -> None:
         if not self.settings.openai_api_key:
@@ -130,7 +174,7 @@ class OpenAIRealtimeVoiceSession:
             open_timeout=15, close_timeout=5, max_size=8 * 1024 * 1024)
         websocket_ms = round((time.monotonic() - started) * 1000, 1)
         instruction_started = time.monotonic()
-        instructions = await self._instructions()
+        instructions, tools = await self._control_plane()
         instructions_ms = round((time.monotonic() - instruction_started) * 1000, 1)
         await self.ws.send(json.dumps({
             "type": "session.update",
@@ -138,6 +182,8 @@ class OpenAIRealtimeVoiceSession:
                 "type": "realtime",
                 "instructions": instructions,
                 "output_modalities": ["audio"],
+                "tools": tools,
+                "tool_choice": "auto",
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
@@ -159,7 +205,8 @@ class OpenAIRealtimeVoiceSession:
         self._connected_at = time.monotonic()
         self._latency("session_connected", websocket_ms=websocket_ms,
                       control_plane_ms=instructions_ms,
-                      model=self.settings.realtime_model)
+                      model=self.settings.realtime_model,
+                      mcp_tools=len(tools))
         self.reader_task = asyncio.create_task(self._read_events())
         self.sender_task = asyncio.create_task(self._send_audio())
 
@@ -274,6 +321,15 @@ class OpenAIRealtimeVoiceSession:
                     task = asyncio.create_task(persist(reply))
                     self._persist_tasks.add(task)
                     task.add_done_callback(self._persist_tasks.discard)
+                elif (kind == "conversation.item.done" and
+                      (event.get("item") or {}).get("type") == "mcp_list_tools"):
+                    item = event.get("item") or {}
+                    self._latency("mcp_tools_loaded", count=len(item.get("tools") or []))
+                elif kind == "response.mcp_call.in_progress":
+                    self._latency("mcp_call_started", tool=event.get("name", ""))
+                elif kind in {"response.mcp_call.completed", "response.mcp_call.failed"}:
+                    self._latency("mcp_call_finished", status=kind.rsplit(".", 1)[-1],
+                                  tool=event.get("name", ""))
                 elif kind == "error":
                     detail = event.get("error") or {}
                     log.warning("Realtime call %s error: %s", self.call_id,
