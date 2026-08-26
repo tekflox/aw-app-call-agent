@@ -21,11 +21,6 @@ log = logging.getLogger("aw_apps.call_agent.realtime_voice")
 log.setLevel(logging.INFO)
 latency_log = logging.getLogger("uvicorn.error")
 
-REALTIME_CRISPAL_TOOLS = [
-    "agent_crispal_haiku",
-    "agent_crispal_sonnet",
-    "agent_crispal_social_sonnet",
-]
 REALTIME_CRISPAL_TARGET = "call-agent-crispal"
 
 
@@ -124,7 +119,8 @@ class OpenAIRealtimeVoiceSession:
             "the caller's language. If interrupted, stop immediately and answer "
             "the newest utterance. Never promise to use a tool later; use it now "
             "or clearly say it is unavailable. For Crispal store questions or "
-            "actions, use the most appropriate Crispal MCP agent. Always pass "
+            "actions or general consultations, always call the Crispal Sonnet "
+            "tool exposed by the scoped MCP. Do not use Haiku. Always pass "
             f"target_slug='{REALTIME_CRISPAL_TARGET}'. Briefly acknowledge that "
             "you are checking, then report the tool result in natural spoken prose.",
         ) if part)
@@ -146,15 +142,17 @@ class OpenAIRealtimeVoiceSession:
         servers = ((config.get("mcp_config") or {}).get("servers") or {})
         server = servers.get("aw-gateway") or {}
         server_url = str(server.get("url") or "").strip()
-        if not server_url or not server_url.rstrip("/").endswith("/mcp/aw-crispal"):
-            log.warning("realtime MCP disabled: agent config is not scoped to aw-crispal")
+        if not server_url or not server_url.rstrip("/").endswith("/mcp/aw-crispal-call"):
+            log.warning("realtime MCP disabled: agent config is not scoped to aw-crispal-call")
             return instructions, []
         tool = {
             "type": "mcp",
             "server_label": "aw_crispal",
             "server_url": server_url,
             "headers": dict(server.get("headers") or {}),
-            "allowed_tools": REALTIME_CRISPAL_TOOLS,
+            # Deliberately omit ``allowed_tools``. The named gateway profile is
+            # the single authorization boundary, so Realtime receives its
+            # complete surface without a second ACL that can drift.
             # The scoped gateway owns its own approval policy. Asking OpenAI
             # for a second approval would stall a live phone call because
             # there is no visual approval surface on the audio channel.

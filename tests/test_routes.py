@@ -44,7 +44,7 @@ from call_agent_app.speech_pipeline import (  # noqa: E402
 )
 from call_agent_app.realtime_voice import (  # noqa: E402
     OpenAIRealtimeVoiceSession, REALTIME_CRISPAL_TARGET,
-    REALTIME_CRISPAL_TOOLS, pcm8k_to_pcm24k, pcm24k_to_pcm8k,
+    pcm8k_to_pcm24k, pcm24k_to_pcm8k,
 )
 
 CONFIG = {
@@ -813,7 +813,7 @@ def test_realtime_control_plane_uses_only_scoped_crispal_mcp(monkeypatch):
                 })
             return FakeResponse({
                 "mcp_config": {"servers": {"aw-gateway": {
-                    "url": "https://mcp.example/mcp/aw-crispal",
+                    "url": "https://mcp.example/mcp/aw-crispal-call",
                     "headers": {"Authorization": "Bearer secret"},
                 }}},
             })
@@ -835,10 +835,11 @@ def test_realtime_control_plane_uses_only_scoped_crispal_mcp(monkeypatch):
         store.close()
 
     assert REALTIME_CRISPAL_TARGET in instructions
+    assert "Crispal Sonnet" in instructions
     assert len(tools) == 1
-    assert tools[0]["server_url"].endswith("/mcp/aw-crispal")
+    assert tools[0]["server_url"].endswith("/mcp/aw-crispal-call")
     assert "server_description" not in tools[0]
-    assert tools[0]["allowed_tools"] == REALTIME_CRISPAL_TOOLS
+    assert "allowed_tools" not in tools[0]
     assert tools[0]["require_approval"] == "never"
     assert tools[0]["headers"]["Authorization"] == "Bearer secret"
 
