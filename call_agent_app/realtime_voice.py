@@ -152,7 +152,6 @@ class OpenAIRealtimeVoiceSession:
         tool = {
             "type": "mcp",
             "server_label": "aw_crispal",
-            "server_description": "Scoped Crispal production agents for store operations.",
             "server_url": server_url,
             "headers": dict(server.get("headers") or {}),
             "allowed_tools": REALTIME_CRISPAL_TOOLS,

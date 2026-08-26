@@ -837,6 +837,7 @@ def test_realtime_control_plane_uses_only_scoped_crispal_mcp(monkeypatch):
     assert REALTIME_CRISPAL_TARGET in instructions
     assert len(tools) == 1
     assert tools[0]["server_url"].endswith("/mcp/aw-crispal")
+    assert "server_description" not in tools[0]
     assert tools[0]["allowed_tools"] == REALTIME_CRISPAL_TOOLS
     assert tools[0]["require_approval"] == "never"
     assert tools[0]["headers"]["Authorization"] == "Bearer secret"
