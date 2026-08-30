@@ -6,6 +6,7 @@ import audioop
 import base64
 import json
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 
@@ -22,6 +23,32 @@ log.setLevel(logging.INFO)
 latency_log = logging.getLogger("uvicorn.error")
 
 REALTIME_CRISPAL_TARGET = "call-agent-crispal"
+REALTIME_CRISPAL_PROFILE = "aw-crispal-call"
+
+
+def _realtime_gateway_url(server_url: str) -> str:
+    """Resolve the public scoped gateway URL OpenAI can actually reach.
+
+    Contributed Agent Configs intentionally reference the workspace's generic
+    ``aw-gateway`` entry. Re-provisioning therefore restores the internal
+    ``http://aw-app-mcp-gateway:9200/mcp`` URL. That address is correct for
+    spawned workspace agents but neither scoped nor reachable by OpenAI.
+    Convert only that canonical unscoped endpoint; an already-scoped URL is
+    preserved verbatim.
+    """
+    url = (server_url or "").strip().rstrip("/")
+    suffix = f"/mcp/{REALTIME_CRISPAL_PROFILE}"
+    if url.endswith(suffix):
+        return url
+    if not url.endswith("/mcp"):
+        return ""
+    workspace_slug = os.environ.get("AW_WORKSPACE_SLUG", "").strip()
+    public_suffix = os.environ.get(
+        "AW_WORKSPACE_PUBLIC_SUFFIX", "workspace.aw.tekflox.com").strip()
+    if not workspace_slug or not public_suffix:
+        return ""
+    return (f"https://mcp-gateway.app.{workspace_slug}.{public_suffix}"
+            f"/mcp/{REALTIME_CRISPAL_PROFILE}")
 
 
 class PCMResampler:
@@ -141,9 +168,11 @@ class OpenAIRealtimeVoiceSession:
 
         servers = ((config.get("mcp_config") or {}).get("servers") or {})
         server = servers.get("aw-gateway") or {}
-        server_url = str(server.get("url") or "").strip()
-        if not server_url or not server_url.rstrip("/").endswith("/mcp/aw-crispal-call"):
-            log.warning("realtime MCP disabled: agent config is not scoped to aw-crispal-call")
+        configured_url = str(server.get("url") or "").strip()
+        server_url = _realtime_gateway_url(configured_url)
+        if not server_url:
+            log.warning("realtime MCP disabled: could not resolve public scoped "
+                        "gateway from %s", configured_url)
             return instructions, []
         tool = {
             "type": "mcp",

@@ -44,7 +44,7 @@ from call_agent_app.speech_pipeline import (  # noqa: E402
 )
 from call_agent_app.realtime_voice import (  # noqa: E402
     OpenAIRealtimeVoiceSession, REALTIME_CRISPAL_TARGET,
-    pcm8k_to_pcm24k, pcm24k_to_pcm8k,
+    _realtime_gateway_url, pcm8k_to_pcm24k, pcm24k_to_pcm8k,
 )
 
 CONFIG = {
@@ -842,6 +842,20 @@ def test_realtime_control_plane_uses_only_scoped_crispal_mcp(monkeypatch):
     assert "allowed_tools" not in tools[0]
     assert tools[0]["require_approval"] == "never"
     assert tools[0]["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_realtime_resolves_contributed_internal_gateway_to_public_profile(monkeypatch):
+    monkeypatch.setenv("AW_WORKSPACE_SLUG", "aw")
+    monkeypatch.setenv("AW_WORKSPACE_PUBLIC_SUFFIX", "workspace.aw.tekflox.com")
+
+    assert _realtime_gateway_url("http://aw-app-mcp-gateway:9200/mcp") == (
+        "https://mcp-gateway.app.aw.workspace.aw.tekflox.com/"
+        "mcp/aw-crispal-call")
+
+
+def test_realtime_preserves_an_already_scoped_gateway_url():
+    url = "https://custom.example/mcp/aw-crispal-call"
+    assert _realtime_gateway_url(url) == url
 
 
 def test_call_store_records_caller_and_agent_audio_separately():
