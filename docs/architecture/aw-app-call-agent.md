@@ -3,13 +3,13 @@ repo: architecture
 path: docs/architecture/aw-app-call-agent.md
 source: generated
 edited: false
-checksum: sha256:a5d0174444176b64525593068b664473d290d86da7493d4abc6bf9621f722145
+checksum: sha256:8b18aba531db5275097b99d073cdeb472de2618ebbd15ae336819b4f842d3482
 ---
 # Call Agent
 
 - **repo**: aw-app-call-agent
-- **layer**: app
-- **technologies**: python, react
+- **layer**: app-container
+- **technologies**: react, docker
 - **health** (derived): planned
 
 Talk to your workspace agent out loud. Open the Call window, hit call, and speak — your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.
