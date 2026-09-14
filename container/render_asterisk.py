@@ -211,8 +211,14 @@ aors=lan-trunk-aor
 from_user={lan_trunk_user}
 direct_media=no
 rtp_symmetric=yes
-force_rport=yes
-rewrite_contact=yes
+; The opposite of the usual NAT advice, and deliberate.  Packets from the
+; gateway reach this container with their source rewritten to the container's
+; own address, so force_rport would make Asterisk answer itself and
+; rewrite_contact would rewrite the gateway's contact to us.  The gateway is
+; told to answer the source port instead (Handle VIA rport / Send Resp To Src
+; Port), which is what makes the reply ride the outbound flow home.
+force_rport=no
+rewrite_contact=no
 tos_audio=ef
 cos_audio=5
 

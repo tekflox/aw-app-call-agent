@@ -29,6 +29,16 @@ LAN_TRUNK_ENV = {
 }
 
 
+def _section(config, name, kind="endpoint"):
+    """The body of one pjsip.conf section, up to where the next one starts.
+
+    One name can label more than one section — the softphone extension names
+    both its aor and its endpoint — so the type disambiguates.
+    """
+    bodies = (b.split("\n[", 1)[0] for b in config.split(f"[{name}]\n")[1:])
+    return next(b for b in bodies if f"type={kind}" in b)
+
+
 def test_auto_external_address_resolves_public_app_hostname(monkeypatch, tmp_path):
     seen = []
 
@@ -108,6 +118,33 @@ def test_lan_trunk_identify_can_match_a_natted_source_address(monkeypatch, tmp_p
 
     assert "match=10.88.0.5" in config
     assert "match=192.168.1.240" not in config
+
+
+def test_lan_trunk_answers_the_source_port_rather_than_rewriting_it(monkeypatch, tmp_path):
+    """The usual NAT pair is backwards for a gateway reached through our own NAT.
+
+    Inbound packets arrive with the source rewritten to this container's own
+    address, so force_rport would make Asterisk send its 100/180/200 to itself
+    and rewrite_contact would point the gateway's contact at us.
+    """
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "192.168.1.73", LAN_TRUNK_ENV)
+    lan_trunk = _section(config, "lan-trunk")
+
+    assert "force_rport=no" in lan_trunk
+    assert "rewrite_contact=no" in lan_trunk
+    # Symmetric RTP is unaffected — the media path never depended on the Via.
+    assert "rtp_symmetric=yes" in lan_trunk
+
+
+def test_softphone_endpoint_keeps_the_usual_nat_pair(monkeypatch, tmp_path):
+    """Only the LAN trunk is special; a real remote softphone still needs both."""
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "192.168.1.73", LAN_TRUNK_ENV)
+    softphone = _section(config, "101")
+
+    assert "force_rport=yes" in softphone
+    assert "rewrite_contact=yes" in softphone
 
 
 def test_lan_trunk_keeps_the_gateway_off_local_net(monkeypatch, tmp_path):
