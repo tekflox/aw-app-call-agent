@@ -121,7 +121,14 @@ sip_host = env("SIP_HOST", "sip.zadarma.com")
 sip_port = env("SIP_PORT", "5060")
 public_number = env("SIP_PUBLIC_NUMBER")
 caller_id = env("SIP_CALLER_ID") or public_number
-if zadarma_enabled:
+# Telephony being switched on does not by itself mean the provider trunk is
+# wanted: an install whose only line is the LAN trunk still has to enable
+# telephony.  Demand the provider's credentials only when this install is
+# actually trying to use it — otherwise a LAN-only host cannot start at all.
+zadarma_requested = zadarma_enabled and (
+    bool(sip_user or sip_password or public_number) or not lan_trunk_enabled
+)
+if zadarma_requested:
     for name, value in {
         "SIP username": sip_user, "SIP password": sip_password,
         "public number": public_number,
@@ -261,7 +268,7 @@ exten => _X.,1,NoOp(Outbound PSTN call via the LAN trunk to ${{EXTEN}})
 {caller_id_line} same => n,Dial(PJSIP/${{EXTEN}}@lan-trunk,60)
  same => n,Hangup()
 """
-if zadarma_enabled:
+if zadarma_requested:
     extensions += f"""
 
 [from-zadarma]

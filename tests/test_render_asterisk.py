@@ -131,6 +131,42 @@ def test_lan_trunk_does_not_resolve_the_public_workspace_hostname(monkeypatch, t
     assert "external_media_address" not in config
 
 
+def test_telephony_on_with_only_a_lan_trunk_does_not_demand_provider_creds(
+        monkeypatch, tmp_path):
+    """A LAN-only install still has to switch telephony on.
+
+    TELEPHONY_ENABLED is the telephony master switch AND the provider-trunk
+    gate. Treating them as one thing made the container exit on
+    "SIP username is required when external telephony is enabled" and
+    crash-loop, even though the provider trunk was never wanted.
+    """
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "192.168.1.73",
+                     {**LAN_TRUNK_ENV, "TELEPHONY_ENABLED": "true"})
+    extensions = (tmp_path / "extensions.conf").read_text()
+
+    assert "[lan-trunk]" in config
+    assert "zadarma" not in config
+    assert "from-zadarma" not in extensions
+
+
+def test_provider_trunk_still_required_when_it_is_the_only_trunk(monkeypatch, tmp_path):
+    """Telephony on, no LAN trunk, no credentials — still a hard error."""
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    with pytest.raises(SystemExit):
+        _render(monkeypatch, tmp_path, "203.0.113.42", {"TELEPHONY_ENABLED": "true"})
+
+
+def test_partially_configured_provider_trunk_still_errors_beside_a_lan_trunk(
+        monkeypatch, tmp_path):
+    """Half-entered provider credentials must not be silently ignored."""
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    with pytest.raises(SystemExit):
+        _render(monkeypatch, tmp_path, "192.168.1.73",
+                {**LAN_TRUNK_ENV, "TELEPHONY_ENABLED": "true",
+                 "SIP_USERNAME": "someone"})
+
+
 def test_lan_trunk_requires_its_credentials(monkeypatch, tmp_path):
     monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
     with pytest.raises(SystemExit):
