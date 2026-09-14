@@ -417,7 +417,7 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             call_store.ensure_call(call_id, direction="outbound", remote_number=call.number)
         try:
             response = await AsteriskAMI(s).originate_call(
-                call.number, s.caller_id or s.public_number, call_id=call_id)
+                call.number, s.effective_caller_id, call_id=call_id)
         except TelephonyError as exc:
             if call_store:
                 call_store.finish(call_id, status="failed", error=str(exc))

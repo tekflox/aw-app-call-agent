@@ -30,7 +30,7 @@ from call_agent_app.service import (  # noqa: E402
 )
 from call_agent_app.telephony import (  # noqa: E402
     AsteriskAMI, TelephonyError, TelephonySettings, normalise_e164,
-    render_asterisk_config,
+    render_asterisk_config, from_config as telephony_from_config,
 )
 from call_agent_app.audio_socket import (  # noqa: E402
     AudioSocketBridge, BargeInDetector, KIND_HANGUP, KIND_PCM_8K, KIND_UUID,
@@ -311,6 +311,72 @@ def test_normalise_e164(raw, want):
 def test_normalise_e164_rejects_unsafe_or_ambiguous_numbers(raw):
     with pytest.raises(TelephonyError):
         normalise_e164(raw)
+
+
+LAN_TRUNK = dict(
+    telephony_enabled=True, asterisk_ami_secret="ami-secret-value-123",
+    lan_trunk_enabled=True, lan_trunk_host="192.168.1.240",
+    lan_trunk_username="pstn", lan_trunk_password="ptsn",
+)
+
+
+def test_lan_trunk_alone_is_a_usable_trunk():
+    s = telephony_from_config(dict(CONFIG, **LAN_TRUNK))
+
+    assert s.lan_trunk_configured is True
+    assert s.provider_configured is False
+    assert s.configured is True
+    assert s.ready is True
+    assert s.missing() == []
+
+
+def test_lan_trunk_reports_its_own_missing_fields_not_the_providers():
+    s = telephony_from_config(dict(CONFIG, **{**LAN_TRUNK, "lan_trunk_password": ""}))
+
+    assert s.missing() == ["lan_trunk_password"]
+    assert s.ready is False
+
+
+def test_lan_trunk_routes_outbound_through_its_own_context():
+    s = telephony_from_config(dict(CONFIG, **LAN_TRUNK))
+    assert s.outbound_context == "call-agent-lan-outbound"
+
+
+def test_provider_trunk_still_wins_when_both_are_configured():
+    s = telephony_from_config(dict(
+        CONFIG, **LAN_TRUNK, sip_username="u", sip_password="p",
+        sip_public_number="+351300000000"))
+    assert s.outbound_context == "call-agent-outbound"
+
+
+@pytest.mark.parametrize("strip,prefix,want", [
+    ("", "", "351912345678"),
+    ("+351", "", "912345678"),
+    ("+351", "0", "0912345678"),
+])
+def test_lan_trunk_dial_string_converts_e164_for_an_analog_line(strip, prefix, want):
+    s = telephony_from_config(dict(
+        CONFIG, **LAN_TRUNK,
+        lan_trunk_strip_prefix=strip, lan_trunk_dial_prefix=prefix))
+    assert s.dial_string("+351 912 345 678") == want
+
+
+def test_provider_trunk_dial_string_is_unchanged_by_lan_prefixes():
+    s = telephony_from_config(dict(
+        CONFIG, sip_username="u", sip_password="p",
+        sip_public_number="+351300000000", lan_trunk_strip_prefix="+351"))
+    assert s.dial_string("+351912345678") == "351912345678"
+
+
+def test_lan_trunk_caller_id_is_used_instead_of_the_public_number():
+    s = telephony_from_config(dict(CONFIG, **LAN_TRUNK, lan_trunk_caller_id="212345678"))
+    assert s.effective_caller_id == "212345678"
+
+
+def test_unconfigured_install_is_still_not_ready():
+    s = telephony_from_config(dict(CONFIG, telephony_enabled=True))
+    assert s.configured is False
+    assert "sip_username" in s.missing()
 
 
 def test_telephony_preview_route_never_leaks_secrets():

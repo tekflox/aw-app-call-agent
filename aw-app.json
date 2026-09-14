@@ -48,6 +48,13 @@
       "SIP_PASSWORD": "${config.sip_password}",
       "SIP_PUBLIC_NUMBER": "${config.sip_public_number}",
       "SIP_CALLER_ID": "${config.sip_caller_id}",
+      "LAN_TRUNK_ENABLED": "${config.lan_trunk_enabled}",
+      "LAN_TRUNK_HOST": "${config.lan_trunk_host}",
+      "LAN_TRUNK_PORT": "${config.lan_trunk_port}",
+      "LAN_TRUNK_USERNAME": "${config.lan_trunk_username}",
+      "LAN_TRUNK_PASSWORD": "${config.lan_trunk_password}",
+      "LAN_TRUNK_IDENTIFY_MATCH": "${config.lan_trunk_identify_match}",
+      "LAN_TRUNK_CALLER_ID": "${config.lan_trunk_caller_id}",
       "AW_AGENTS_PLATFORM_BASE": "${config.agents_platform_base}",
       "AW_AGENTS_PLATFORM_TOKEN": "${config.agents_platform_token}",
       "AW_CALL_AGENT_SLUG": "${config.agent_slug}",
@@ -398,6 +405,60 @@
         "default": "",
         "title": "Outbound caller ID",
         "description": "Leave blank to use the public number. The provider must authorize this caller ID."
+      },
+      "lan_trunk_enabled": {
+        "type": "boolean",
+        "default": false,
+        "title": "Enable LAN SIP trunk",
+        "description": "Add a SIP gateway on the local network (for example an analog telephone adapter) as a trunk. Independent of the SIP provider trunk above — either, both or neither can be on."
+      },
+      "lan_trunk_host": {
+        "type": "string",
+        "default": "",
+        "title": "LAN trunk address",
+        "description": "IP or hostname of the gateway on the local network, for example 192.168.1.240."
+      },
+      "lan_trunk_port": {
+        "type": "integer",
+        "default": 5061,
+        "title": "LAN trunk SIP port",
+        "description": "UDP port the gateway listens for SIP on."
+      },
+      "lan_trunk_username": {
+        "type": "string",
+        "default": "",
+        "title": "LAN trunk username",
+        "description": "SIP user the gateway expects. Copy it from the device exactly as it is spelled there."
+      },
+      "lan_trunk_password": {
+        "type": "string",
+        "x-secret": true,
+        "title": "LAN trunk password",
+        "description": "SIP password the gateway expects."
+      },
+      "lan_trunk_identify_match": {
+        "type": "string",
+        "default": "",
+        "title": "LAN trunk source address",
+        "description": "Source address Asterisk actually sees for inbound calls from the gateway. Leave blank to use the trunk address. Set it when the container reaches the network through NAT — on a macOS podman host inbound packets arrive from the container-network gateway (for example 10.88.0.5), never from the device's own LAN address, and matching the latter silently never fires."
+      },
+      "lan_trunk_caller_id": {
+        "type": "string",
+        "default": "",
+        "title": "LAN trunk caller ID",
+        "description": "Caller ID presented on outbound LAN-trunk calls. Leave blank to let the line supply its own."
+      },
+      "lan_trunk_strip_prefix": {
+        "type": "string",
+        "default": "",
+        "title": "LAN trunk: strip dial prefix",
+        "description": "Removed from the front of an E.164 number before dialling, for example +351 so a Portuguese number goes out in national form. An analog line usually rejects the E.164 form."
+      },
+      "lan_trunk_dial_prefix": {
+        "type": "string",
+        "default": "",
+        "title": "LAN trunk: add dial prefix",
+        "description": "Prepended to the number after stripping, for example an outside-line digit."
       },
       "asterisk_ami_host": {
         "type": "string",

@@ -51,16 +51,86 @@ class TelephonySettings:
     ami_secret: str = ""
     audio_socket_host: str = "127.0.0.1"
     audio_socket_port: int = 9019
+    lan_trunk_enabled: bool = False
+    lan_trunk_host: str = ""
+    lan_trunk_port: int = 5061
+    lan_trunk_username: str = ""
+    lan_trunk_password: str = ""
+    lan_trunk_caller_id: str = ""
+    lan_trunk_strip_prefix: str = ""
+    lan_trunk_dial_prefix: str = ""
+
+    @property
+    def provider_configured(self) -> bool:
+        """The external SIP provider trunk (Zadarma) has its credentials."""
+        return bool(self.sip_username and self.sip_password and self.public_number)
+
+    @property
+    def lan_trunk_configured(self) -> bool:
+        """A gateway on the local network is enabled and has its credentials."""
+        return bool(
+            self.lan_trunk_enabled
+            and self.lan_trunk_host
+            and self.lan_trunk_username
+            and self.lan_trunk_password
+        )
 
     @property
     def configured(self) -> bool:
-        return bool(self.sip_username and self.sip_password and self.public_number)
+        """At least one trunk can carry a call."""
+        return self.provider_configured or self.lan_trunk_configured
 
     @property
     def ready(self) -> bool:
         return self.enabled and self.configured and bool(self.ami_secret)
 
+    @property
+    def outbound_context(self) -> str:
+        """Dialplan context an AMI-originated call is routed through.
+
+        The LAN trunk wins when it is the only usable one, so a host whose
+        only line is a local gateway needs no extra setting.  An install that
+        has both configured keeps dialling through the provider, which is the
+        one that can reach an arbitrary number.
+        """
+        if self.lan_trunk_configured and not self.provider_configured:
+            return "call-agent-lan-outbound"
+        return "call-agent-outbound"
+
+    @property
+    def effective_caller_id(self) -> str:
+        """Caller ID to present, for whichever trunk the call goes out on."""
+        if self.outbound_context == "call-agent-lan-outbound":
+            return self.lan_trunk_caller_id
+        return self.caller_id or self.public_number
+
+    def dial_string(self, number: str) -> str:
+        """Turn an E.164 number into the digits this trunk wants dialled.
+
+        An analog line reached through a local gateway rarely accepts E.164:
+        it wants the national form, sometimes behind an outside-line prefix.
+        The provider trunk takes the number as-is, minus the plus sign.
+        """
+        e164 = normalise_e164(number)
+        if self.outbound_context != "call-agent-lan-outbound":
+            return e164.lstrip("+")
+        digits = e164
+        if self.lan_trunk_strip_prefix and digits.startswith(self.lan_trunk_strip_prefix):
+            digits = digits[len(self.lan_trunk_strip_prefix):]
+        return f"{self.lan_trunk_dial_prefix}{digits.lstrip('+')}"
+
     def missing(self) -> list[str]:
+        if self.lan_trunk_enabled and not self.provider_configured:
+            fields = []
+            if not self.lan_trunk_host:
+                fields.append("lan_trunk_host")
+            if not self.lan_trunk_username:
+                fields.append("lan_trunk_username")
+            if not self.lan_trunk_password:
+                fields.append("lan_trunk_password")
+            if not self.ami_secret:
+                fields.append("asterisk_ami_secret")
+            return fields
         fields = []
         if not self.sip_username:
             fields.append("sip_username")
@@ -98,6 +168,14 @@ def from_config(config: dict | None) -> TelephonySettings:
         ami_secret=_clean(cfg.get("asterisk_ami_secret")),
         audio_socket_host=_clean(cfg.get("asterisk_audio_socket_host")) or "127.0.0.1",
         audio_socket_port=positive_int("asterisk_audio_socket_port", 9019),
+        lan_trunk_enabled=bool(cfg.get("lan_trunk_enabled", False)),
+        lan_trunk_host=_clean(cfg.get("lan_trunk_host")),
+        lan_trunk_port=positive_int("lan_trunk_port", 5061),
+        lan_trunk_username=_clean(cfg.get("lan_trunk_username")),
+        lan_trunk_password=_clean(cfg.get("lan_trunk_password")),
+        lan_trunk_caller_id=_clean(cfg.get("lan_trunk_caller_id")),
+        lan_trunk_strip_prefix=_clean(cfg.get("lan_trunk_strip_prefix")),
+        lan_trunk_dial_prefix=_clean(cfg.get("lan_trunk_dial_prefix")),
     )
 
 
@@ -229,10 +307,10 @@ class AsteriskAMI:
 
     async def originate_call(self, number: str, caller_id: str = "",
                              call_id: str = "") -> dict[str, str]:
-        destination = normalise_e164(number).lstrip("+")
+        destination = self.settings.dial_string(number)
         action = {
             "Action": "Originate",
-            "Channel": f"Local/{destination}@call-agent-outbound",
+            "Channel": f"Local/{destination}@{self.settings.outbound_context}",
             "Context": "from-call-agent",
             "Exten": "s",
             "Priority": "1",

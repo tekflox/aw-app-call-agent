@@ -24,16 +24,34 @@ for name, value in {"SIP password": password, "AMI secret": ami_secret}.items():
     if not re.fullmatch(r"[^\r\n]{12,200}", value):
         raise SystemExit(f"{name} must contain 12-200 characters without newlines")
 
-def resolve_external_address(value: str) -> str:
+lan_trunk_enabled = env("LAN_TRUNK_ENABLED").lower() in {"1", "true", "yes", "on"}
+lan_trunk_host = env("LAN_TRUNK_HOST")
+lan_trunk_port = env("LAN_TRUNK_PORT", "5061")
+lan_trunk_user = env("LAN_TRUNK_USERNAME")
+lan_trunk_password = env("LAN_TRUNK_PASSWORD")
+lan_trunk_caller_id = env("LAN_TRUNK_CALLER_ID")
+# Inbound INVITEs do not necessarily arrive from the gateway's own LAN address.
+# On a macOS podman host they are source-NATed to the container network gateway,
+# so matching the gateway IP never fires.  Blank keeps the textbook behaviour.
+lan_trunk_match = env("LAN_TRUNK_IDENTIFY_MATCH") or lan_trunk_host
+
+
+def resolve_external_address(value: str, *, allow_public_lookup: bool = True) -> str:
     """Return an explicit address or discover this app's public IPv4.
 
     Cloud workspaces have a deterministic per-app hostname.  Resolving it at
     container start makes a brand-new install usable from an external
     softphone without baking one workspace's IP into the image.  Self-hosted
     installs can always override this with ``sip_external_address``.
+
+    ``allow_public_lookup`` turns that discovery off.  A host whose trunk is a
+    box on the LAN has no use for the workspace's public edge address, and
+    writing it into the SDP would point every media stream at the wrong machine.
     """
     if value and value.lower() != "auto":
         return value
+    if not allow_public_lookup:
+        return ""
     workspace_slug = env("AW_WORKSPACE_SLUG")
     public_suffix = env("AW_WORKSPACE_PUBLIC_SUFFIX", "workspace.aw.tekflox.com")
     if not workspace_slug:
@@ -45,16 +63,22 @@ def resolve_external_address(value: str) -> str:
         return ""
 
 
-external_address = resolve_external_address(external_address)
+external_address = resolve_external_address(
+    external_address, allow_public_lookup=not lan_trunk_enabled)
 transport_extra = ""
 if external_address:
+    local_nets = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+    if lan_trunk_enabled:
+        # The LAN trunk sits in 192.168/16 but does not share a network with
+        # Asterisk: it reaches the container through the host's NAT.  Calling
+        # it "local" makes PJSIP advertise the container's own bind address
+        # (10.x) instead of external_media_address, and the RTP goes nowhere
+        # while the signalling still completes with a 200 OK.
+        local_nets.remove("192.168.0.0/16")
     transport_extra = (
         f"external_signaling_address={external_address}\n"
         f"external_media_address={external_address}\n"
-        "local_net=127.0.0.0/8\n"
-        "local_net=10.0.0.0/8\n"
-        "local_net=172.16.0.0/12\n"
-        "local_net=192.168.0.0/16\n"
+        + "".join(f"local_net={net}\n" for net in local_nets)
     )
 
 pjsip = f"""[transport-udp]
@@ -146,6 +170,51 @@ contact_user={sip_user}
 retry_interval=60
 """
 
+if lan_trunk_enabled:
+    for name, value in {
+        "LAN trunk host": lan_trunk_host,
+        "LAN trunk username": lan_trunk_user,
+        "LAN trunk password": lan_trunk_password,
+    }.items():
+        if not value or "\n" in value or "\r" in value:
+            raise SystemExit(f"{name} is required when the LAN SIP trunk is enabled")
+    # Deliberately no type=registration: the gateway answers unregistered
+    # calls (its "Ans Call Without Reg" mode), and nothing here registers
+    # anywhere.  Adding one would only give the trunk a second way to fail.
+    pjsip += f"""
+[lan-trunk-auth]
+type=auth
+auth_type=userpass
+username={lan_trunk_user}
+password={lan_trunk_password}
+
+[lan-trunk-aor]
+type=aor
+contact=sip:{lan_trunk_host}:{lan_trunk_port}
+qualify_frequency=60
+
+[lan-trunk]
+type=endpoint
+transport=transport-udp
+context=from-lan-trunk
+disallow=all
+allow=ulaw,alaw
+outbound_auth=lan-trunk-auth
+aors=lan-trunk-aor
+from_user={lan_trunk_user}
+direct_media=no
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+tos_audio=ef
+cos_audio=5
+
+[lan-trunk-identify]
+type=identify
+endpoint=lan-trunk
+match={lan_trunk_match}
+"""
+
 extensions = f"""[internal]
 exten => {agent_extension},1,NoOp(Internal call to AW Call Agent)
  same => n,Answer()
@@ -156,6 +225,40 @@ exten => {agent_extension},1,NoOp(Internal call to AW Call Agent)
  same => n,Set(CALL_ID=${{UUID()}})
  same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
  same => n,Verbose(1,RTP_QOS ${{CHANNEL(rtpqos,audio,all)}})
+ same => n,Hangup()
+
+; The agent's own leg of an AMI-originated outbound call.  telephony.py's
+; Originate names this context, so it has to exist here in the runtime config
+; and not only in the settings-panel preview -- without it every outbound call
+; fails the moment the far end answers.
+[from-call-agent]
+exten => s,1,NoOp(Connect outbound call to the Call Agent audio bridge)
+ same => n,Set(CALL_ID=${{IF($["${{CALL_ID}}"=""]?${{UUID()}}:${{CALL_ID}})}})
+ same => n,Set(JITTERBUFFER(adaptive)=200,,60)
+ same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
+ same => n,Verbose(1,RTP_QOS ${{CHANNEL(rtpqos,audio,all)}})
+ same => n,Hangup()
+"""
+if lan_trunk_enabled:
+    # The analog line supplies its own caller ID unless one is configured.
+    caller_id_line = ""
+    if lan_trunk_caller_id:
+        caller_id_line = f" same => n,Set(CALLERID(num)={lan_trunk_caller_id})\n"
+    extensions += f"""
+
+[from-lan-trunk]
+exten => _X.,1,Goto(s,1)
+exten => s,1,NoOp(Inbound PSTN call from the LAN trunk)
+ same => n,Answer()
+ same => n,Set(JITTERBUFFER(adaptive)=200,,60)
+ same => n,Set(CALL_ID=${{UUID()}})
+ same => n,AudioSocket(${{CALL_ID}},127.0.0.1:9019)
+ same => n,Verbose(1,RTP_QOS ${{CHANNEL(rtpqos,audio,all)}})
+ same => n,Hangup()
+
+[call-agent-lan-outbound]
+exten => _X.,1,NoOp(Outbound PSTN call via the LAN trunk to ${{EXTEN}})
+{caller_id_line} same => n,Dial(PJSIP/${{EXTEN}}@lan-trunk,60)
  same => n,Hangup()
 """
 if zadarma_enabled:

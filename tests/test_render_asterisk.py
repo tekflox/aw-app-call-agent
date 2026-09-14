@@ -2,18 +2,31 @@ import runpy
 import socket
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = Path(__file__).parents[1] / "container" / "render_asterisk.py"
 
 
-def _render(monkeypatch, tmp_path, external="auto"):
+def _render(monkeypatch, tmp_path, external="auto", lan_trunk=None):
     monkeypatch.setenv("ASTERISK_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("INTERNAL_SIP_PASSWORD", "internal-secret-123")
     monkeypatch.setenv("ASTERISK_AMI_SECRET", "ami-secret-value-123")
     monkeypatch.setenv("SIP_EXTERNAL_ADDRESS", external)
     monkeypatch.setenv("AW_WORKSPACE_SLUG", "fresh-workspace")
+    for name, value in (lan_trunk or {}).items():
+        monkeypatch.setenv(name, value)
     runpy.run_path(str(SCRIPT))
     return (tmp_path / "pjsip.conf").read_text()
+
+
+LAN_TRUNK_ENV = {
+    "LAN_TRUNK_ENABLED": "true",
+    "LAN_TRUNK_HOST": "192.168.1.240",
+    "LAN_TRUNK_PORT": "5061",
+    "LAN_TRUNK_USERNAME": "pstn",
+    "LAN_TRUNK_PASSWORD": "ptsn",
+}
 
 
 def test_auto_external_address_resolves_public_app_hostname(monkeypatch, tmp_path):
@@ -51,3 +64,85 @@ def test_softphone_media_uses_dialplan_jitter_buffer_and_audio_qos(monkeypatch, 
     assert "cos_audio=5" in config
     assert "Set(JITTERBUFFER(adaptive)=200,,60)" in extensions
     assert "CHANNEL(rtpqos,audio,all)" in extensions
+
+
+def test_outbound_originate_context_exists_in_the_runtime_config(monkeypatch, tmp_path):
+    """telephony.py Originates into from-call-agent; it must be rendered here.
+
+    It used to exist only in the settings-panel preview renderer, so every
+    AMI-originated call had nowhere to land once the far end answered.
+    """
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    _render(monkeypatch, tmp_path)
+    extensions = (tmp_path / "extensions.conf").read_text()
+
+    assert "[from-call-agent]" in extensions
+    assert "exten => s,1," in extensions
+    assert "AudioSocket(" in extensions
+
+
+def test_lan_trunk_renders_endpoint_identify_and_both_dialplan_legs(monkeypatch, tmp_path):
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "192.168.1.73", LAN_TRUNK_ENV)
+    extensions = (tmp_path / "extensions.conf").read_text()
+
+    assert "[lan-trunk]" in config
+    assert "contact=sip:192.168.1.240:5061" in config
+    assert "username=pstn" in config
+    assert "password=ptsn" in config
+    assert "context=from-lan-trunk" in config
+    assert "[lan-trunk-identify]" in config
+    assert "match=192.168.1.240" in config
+    # No registration: the gateway answers unregistered calls.
+    assert "[lan-trunk-registration]" not in config
+    assert "[from-lan-trunk]" in extensions
+    assert "Dial(PJSIP/${EXTEN}@lan-trunk,60)" in extensions
+
+
+def test_lan_trunk_identify_can_match_a_natted_source_address(monkeypatch, tmp_path):
+    """Inbound packets arrive from the container-network gateway, not the device."""
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(
+        monkeypatch, tmp_path, "192.168.1.73",
+        {**LAN_TRUNK_ENV, "LAN_TRUNK_IDENTIFY_MATCH": "10.88.0.5"})
+
+    assert "match=10.88.0.5" in config
+    assert "match=192.168.1.240" not in config
+
+
+def test_lan_trunk_keeps_the_gateway_off_local_net(monkeypatch, tmp_path):
+    """192.168/16 as local_net makes PJSIP advertise the container's own IP."""
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "192.168.1.73", LAN_TRUNK_ENV)
+
+    assert "external_media_address=192.168.1.73" in config
+    assert "local_net=192.168.0.0/16" not in config
+    assert "local_net=172.16.0.0/12" in config
+
+
+def test_lan_trunk_does_not_resolve_the_public_workspace_hostname(monkeypatch, tmp_path):
+    """'auto' would write the workspace edge IP into the SDP on a LAN host."""
+    monkeypatch.setattr(
+        socket, "gethostbyname",
+        lambda _hostname: (_ for _ in ()).throw(AssertionError("unexpected DNS lookup")),
+    )
+    config = _render(monkeypatch, tmp_path, "auto", LAN_TRUNK_ENV)
+
+    assert "external_media_address" not in config
+
+
+def test_lan_trunk_requires_its_credentials(monkeypatch, tmp_path):
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    with pytest.raises(SystemExit):
+        _render(monkeypatch, tmp_path, "192.168.1.73",
+                {**LAN_TRUNK_ENV, "LAN_TRUNK_PASSWORD": ""})
+
+
+def test_lan_trunk_stays_off_unless_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path)
+    extensions = (tmp_path / "extensions.conf").read_text()
+
+    assert "lan-trunk" not in config
+    assert "from-lan-trunk" not in extensions
+    assert "local_net=192.168.0.0/16" in config
