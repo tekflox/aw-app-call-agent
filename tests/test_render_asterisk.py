@@ -147,6 +147,67 @@ def test_softphone_endpoint_keeps_the_usual_nat_pair(monkeypatch, tmp_path):
     assert "rewrite_contact=yes" in softphone
 
 
+def test_transport_binds_one_port_and_advertises_another(monkeypatch, tmp_path):
+    """On a gvproxy host the bind port must not be the published host port.
+
+    Outbound UDP from a source port that is also published is dropped, so the
+    transport binds a port nothing publishes and advertises the published one.
+    """
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "192.168.1.73",
+                     {**LAN_TRUNK_ENV, "SIP_BIND_PORT": "5062",
+                      "SIP_ADVERTISED_PORT": "5060"})
+    transport = _section(config, "transport-udp", kind="transport")
+
+    assert "bind=0.0.0.0:5062" in transport
+    assert "external_signaling_port=5060" in transport
+    assert "external_signaling_address=192.168.1.73" in transport
+
+
+def test_advertising_a_different_port_without_an_external_address_is_fatal(
+        monkeypatch, tmp_path):
+    """PJSIP only rewrites the port alongside the address.
+
+    With no external address it advertises the container's own address and the
+    BIND port, so Via/Contact would name a port nothing forwards to. Verified
+    against a live Asterisk 20: the rewrite is suppressed entirely.
+    """
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    with pytest.raises(SystemExit):
+        _render(monkeypatch, tmp_path, "auto",
+                {**LAN_TRUNK_ENV, "SIP_BIND_PORT": "5062",
+                 "SIP_ADVERTISED_PORT": "5060"})
+
+
+def test_ports_default_to_5060_on_both_sides(monkeypatch, tmp_path):
+    """An install that sets neither keeps the pre-existing single-port shape."""
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "192.168.1.73", LAN_TRUNK_ENV)
+    transport = _section(config, "transport-udp", kind="transport")
+
+    assert "bind=0.0.0.0:5060" in transport
+    assert "external_signaling_port=5060" in transport
+
+
+def test_a_non_numeric_port_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    with pytest.raises(SystemExit):
+        _render(monkeypatch, tmp_path, "192.168.1.73",
+                {**LAN_TRUNK_ENV, "SIP_BIND_PORT": "not-a-port"})
+
+
+def test_the_provider_registrar_port_is_not_the_bind_port(monkeypatch, tmp_path):
+    """SIP_PORT belongs to the Zadarma registrar; SIP_BIND_PORT is ours."""
+    monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")
+    config = _render(monkeypatch, tmp_path, "198.51.100.9",
+                     {"TELEPHONY_ENABLED": "true", "SIP_USERNAME": "u",
+                      "SIP_PASSWORD": "p", "SIP_PUBLIC_NUMBER": "+351300000000",
+                      "SIP_PORT": "5070", "SIP_BIND_PORT": "5062"})
+
+    assert "bind=0.0.0.0:5062" in _section(config, "transport-udp", kind="transport")
+    assert "contact=sip:sip.zadarma.com:5070" in config
+
+
 def test_lan_trunk_keeps_the_gateway_off_local_net(monkeypatch, tmp_path):
     """192.168/16 as local_net makes PJSIP advertise the container's own IP."""
     monkeypatch.setattr(socket, "gethostbyname", lambda _hostname: "203.0.113.42")

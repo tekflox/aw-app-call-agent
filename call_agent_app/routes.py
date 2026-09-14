@@ -278,7 +278,13 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
                                 status_code=409)
         before = {row["id"] for row in call_store.list(20)} if call_store else set()
         bridge = audio_bridge_provider() if audio_bridge_provider else None
-        tester = SipSoftphoneTester(username, password, extension)
+        # The self-test dials Asterisk from inside the container, so it has to
+        # follow the port Asterisk BINDS -- which is no longer the port the
+        # outside world reaches us on.  Defaulting to 5060 here would report a
+        # working PBX as broken.
+        tester = SipSoftphoneTester(
+            username, password, extension,
+            port=int(os.environ.get("SIP_BIND_PORT") or 5060))
         try:
             service = CallAgentService(current())
             prompts = []

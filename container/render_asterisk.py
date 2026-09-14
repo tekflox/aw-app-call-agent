@@ -24,6 +24,17 @@ for name, value in {"SIP password": password, "AMI secret": ami_secret}.items():
     if not re.fullmatch(r"[^\r\n]{12,200}", value):
         raise SystemExit(f"{name} must contain 12-200 characters without newlines")
 
+# The port Asterisk binds is deliberately allowed to differ from the port it
+# advertises.  On a gvproxy host (macOS podman) a container's outbound UDP is
+# dropped whenever its source port is also a published host port, so the
+# transport binds a port nothing publishes and advertises the published one.
+sip_bind_port = env("SIP_BIND_PORT", "5060")
+sip_advertised_port = env("SIP_ADVERTISED_PORT") or sip_bind_port
+for name, value in {"SIP bind port": sip_bind_port,
+                    "SIP advertised port": sip_advertised_port}.items():
+    if not value.isdigit() or not 1 <= int(value) <= 65535:
+        raise SystemExit(f"{name} must be a port number, got {value!r}")
+
 lan_trunk_enabled = env("LAN_TRUNK_ENABLED").lower() in {"1", "true", "yes", "on"}
 lan_trunk_host = env("LAN_TRUNK_HOST")
 lan_trunk_port = env("LAN_TRUNK_PORT", "5061")
@@ -65,6 +76,16 @@ def resolve_external_address(value: str, *, allow_public_lookup: bool = True) ->
 
 external_address = resolve_external_address(
     external_address, allow_public_lookup=not lan_trunk_enabled)
+if sip_advertised_port != sip_bind_port and not external_address:
+    # PJSIP only rewrites the port alongside the address: with no external
+    # address it advertises the container's own address AND the bind port.
+    # Silently advertising a port nothing forwards to is the one outcome that
+    # must not be possible, so refuse to start instead.
+    raise SystemExit(
+        f"SIP advertised port {sip_advertised_port} differs from the bind port "
+        f"{sip_bind_port}, but no external address is configured -- Via and "
+        f"Contact would advertise the unreachable bind port. "
+        f"Set sip_external_address.")
 transport_extra = ""
 if external_address:
     local_nets = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
@@ -77,6 +98,7 @@ if external_address:
         local_nets.remove("192.168.0.0/16")
     transport_extra = (
         f"external_signaling_address={external_address}\n"
+        f"external_signaling_port={sip_advertised_port}\n"
         f"external_media_address={external_address}\n"
         + "".join(f"local_net={net}\n" for net in local_nets)
     )
@@ -84,7 +106,7 @@ if external_address:
 pjsip = f"""[transport-udp]
 type=transport
 protocol=udp
-bind=0.0.0.0:5060
+bind=0.0.0.0:{sip_bind_port}
 {transport_extra}
 [{extension}-auth]
 type=auth

@@ -22,13 +22,8 @@
     },
     "publish": [
       {
-        "container": 5060,
+        "container": 5062,
         "host": 5060,
-        "protocol": "udp"
-      },
-      {
-        "container": "10000-10100",
-        "host": "10000-10100",
         "protocol": "udp"
       }
     ],
@@ -37,6 +32,8 @@
       "INTERNAL_SIP_PASSWORD": "${config.internal_sip_password}",
       "CALL_AGENT_EXTENSION": "${config.call_agent_extension}",
       "SIP_EXTERNAL_ADDRESS": "${config.sip_external_address}",
+      "SIP_BIND_PORT": "5062",
+      "SIP_ADVERTISED_PORT": "5060",
       "ASTERISK_AMI_SECRET": "${config.asterisk_ami_secret}",
       "ASTERISK_AMI_HOST": "127.0.0.1",
       "ASTERISK_AUDIO_SOCKET_HOST": "127.0.0.1",
