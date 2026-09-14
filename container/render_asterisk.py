@@ -281,6 +281,17 @@ type=global
 unidentified_request_count=5
 unidentified_request_period=5
 unidentified_request_prune_interval=30
+; Username BEFORE ip, which is the reverse of the default -- and the feature
+; does not work without it.  lan-trunk's identify matches a whole /24, and
+; every packet reaching this container has been rewritten into that /24, so
+; with ip first the identify claims the WAN softphone's own INVITEs too and
+; the guard below (correctly) hangs them up.  Matching the From user first
+; sends the softphone to its own endpoint; the LAN gateway does not name any
+; endpoint in its From user, so it still falls through to ip exactly as
+; before.  Nothing is trusted on the strength of this: the WAN endpoint still
+; has to authenticate, and anything that does reach lan-trunk this way is
+; still checked by the socket guard.
+endpoint_identifier_order=username,ip,anonymous
 
 [transport-wan]
 type=transport
@@ -292,13 +303,17 @@ external_signaling_address={wan_address}
 external_signaling_port={wan_advertised_port}
 external_media_address={wan_address}
 
-[wan-auth]
+; Named after the SIP username, following the [101] softphone convention --
+; and load-bearing, not cosmetic: res_pjsip_registrar looks an incoming
+; REGISTER up by the To-header user against ENDPOINT names, so an endpoint
+; called anything else answers 404 and no softphone can ever register.
+[{wan_user}-auth]
 type=auth
 auth_type=userpass
 username={wan_user}
 password={wan_password}
 
-[wan]
+[{wan_user}]
 type=aor
 max_contacts=1
 remove_existing=yes
@@ -307,14 +322,14 @@ remove_existing=yes
 ; re-REGISTERs.
 qualify_frequency=30
 
-[wan]
+[{wan_user}]
 type=endpoint
 transport=transport-wan
 context=from-wan
 disallow=all
 allow=ulaw,alaw
-auth=wan-auth
-aors=wan
+auth={wan_user}-auth
+aors={wan_user}
 direct_media=no
 ; The usual NAT pair, unlike the LAN trunk: replies must go back to the
 ; packet source, because that source is the host NAT's return path.

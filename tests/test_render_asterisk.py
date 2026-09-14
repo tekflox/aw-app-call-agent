@@ -290,11 +290,13 @@ def test_lan_trunk_stays_off_unless_enabled(monkeypatch, tmp_path):
 # feature works on the wire. What it does prove is that the properties the
 # whole safety argument rests on cannot be deleted without a test going red.
 
+WAN_USER = "3f1c9a02-5b6d-4e7f-8a90-1b2c3d4e5f60"
+
 WAN_ENV = {
     **LAN_TRUNK_ENV,
     "WAN_SIP_ENABLED": "true",
     "WAN_SIP_EXTERNAL_ADDRESS": "home.example.com",
-    "WAN_SIP_USERNAME": "3f1c9a02-5b6d-4e7f-8a90-1b2c3d4e5f60",
+    "WAN_SIP_USERNAME": WAN_USER,
     "WAN_SIP_PASSWORD": "wan-password-with-enough-entropy",
     "WAN_SIP_BIND_PORT": "5063",
     "WAN_SIP_ADVERTISED_PORT": "45060",
@@ -378,11 +380,17 @@ def test_wan_endpoint_is_selected_by_auth_and_never_by_identify(monkeypatch, tmp
     is reachable by an INVITE carrying no credentials at all.
     """
     config = _render_wan(monkeypatch, tmp_path)
-    endpoint = _section(config, "wan")
+    endpoint = _section(config, WAN_USER)
 
-    assert "auth=wan-auth" in endpoint
+    assert f"auth={WAN_USER}-auth" in endpoint
     assert "identify" not in endpoint
-    assert "[wan-identify]" not in config
+    # Name-independent, because a section can be called anything: there must
+    # be exactly ONE type=identify in the whole config and it must be the LAN
+    # trunk's. An identify pointed at the WAN endpoint would admit an INVITE
+    # that carries no credentials at all.
+    identifies = [b for b in config.split("\n[") if "type=identify" in b]
+    assert len(identifies) == 1, identifies
+    assert "endpoint=lan-trunk" in identifies[0]
     # No anonymous endpoint may exist either — that is the other way in.
     assert "[anonymous]" not in config
 
@@ -394,7 +402,7 @@ def test_wan_endpoint_uses_the_usual_nat_pair_not_the_lan_trunk_s(monkeypatch, t
     source is the host NAT's return path.
     """
     config = _render_wan(monkeypatch, tmp_path)
-    endpoint = _section(config, "wan")
+    endpoint = _section(config, WAN_USER)
 
     assert "force_rport=yes" in endpoint
     assert "rewrite_contact=yes" in endpoint
@@ -406,7 +414,7 @@ def test_wan_endpoint_uses_the_usual_nat_pair_not_the_lan_trunk_s(monkeypatch, t
 def test_wan_aor_qualifies_often_enough_to_keep_the_nat_mapping_warm(
         monkeypatch, tmp_path):
     config = _render_wan(monkeypatch, tmp_path)
-    aor = _section(config, "wan", kind="aor")
+    aor = _section(config, WAN_USER, kind="aor")
 
     assert "qualify_frequency=30" in aor
     assert "max_contacts=1" in aor
@@ -489,7 +497,7 @@ def test_wan_context_dials_the_lan_trunk_and_keeps_the_agent_extension(
     config = _render_wan(monkeypatch, tmp_path)
     extensions = (tmp_path / "extensions.conf").read_text()
 
-    assert "context=from-wan" in _section(config, "wan")
+    assert "context=from-wan" in _section(config, WAN_USER)
     body = extensions.split("[from-wan]", 1)[1].split("\n\n[", 1)[0]
     assert "Dial(PJSIP/${DEST}@lan-trunk,60)" in body
     # _X. would otherwise send 700 down the PSTN line instead of to the agent.
@@ -551,8 +559,9 @@ def test_wan_stays_off_unless_enabled(monkeypatch, tmp_path):
     extensions = (tmp_path / "extensions.conf").read_text()
 
     assert "transport-wan" not in config
-    assert "[wan]" not in config
-    assert "wan-auth" not in config
+    assert f"[{WAN_USER}]" not in config
+    assert "-auth" not in config.replace("101-auth", "").replace("lan-trunk-auth", "")
+    assert "endpoint_identifier_order" not in config
     assert "from-wan" not in extensions
     assert "unidentified_request_count" not in config
 
@@ -659,3 +668,40 @@ def test_the_wan_credentials_are_generated_and_cannot_be_defaulted():
         assert "default" not in schema[key]
     assert schema["wan_sip_password"].get("x-secret") is True
     assert schema["wan_sip_enabled"]["default"] is False
+
+
+def test_the_wan_endpoint_is_named_after_its_sip_username(monkeypatch, tmp_path):
+    """Otherwise no softphone can ever register — measured, not guessed.
+
+    res_pjsip_registrar looks an incoming REGISTER up by the To-header user
+    against ENDPOINT names. With the endpoint called anything else, a live
+    Asterisk answers 404 Not Found to a perfectly valid REGISTER. Named after
+    the username it answers 401 then 200. Same convention as the [101]
+    softphone this repo already ships.
+    """
+    config = _render_wan(monkeypatch, tmp_path)
+
+    assert f"[{WAN_USER}]\ntype=endpoint" in config
+    assert f"[{WAN_USER}]\ntype=aor" in config
+    assert f"[{WAN_USER}-auth]\ntype=auth" in config
+    assert f"auth={WAN_USER}-auth" in _section(config, WAN_USER)
+
+
+def test_username_identification_runs_before_ip(monkeypatch, tmp_path):
+    """Reverse of the PJSIP default, and the feature does not work without it.
+
+    lan-trunk's identify matches a whole /24 and every packet reaching this
+    container has been rewritten into that /24 — so with ip first, identify
+    claims the WAN softphone's OWN INVITEs and the socket guard correctly
+    hangs up its owner. Matching the From user first routes the softphone to
+    its own endpoint; the LAN gateway names no endpoint in its From user, so
+    it still falls through to ip exactly as before.
+    """
+    config = _render_wan(monkeypatch, tmp_path)
+
+    assert "endpoint_identifier_order=username,ip,anonymous" in config
+    # Order matters, not just presence.
+    order = config.split("endpoint_identifier_order=")[1].split("\n")[0]
+    assert order.index("username") < order.index("ip")
+    # And it must not hand anything to an anonymous endpoint ahead of ip.
+    assert order.index("ip") < order.index("anonymous")
