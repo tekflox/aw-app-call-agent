@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ./configure --prefix=/usr --with-jansson-bundled --with-pjproject-bundled \
     && make menuselect.makeopts \
     && menuselect/menuselect --enable app_audiosocket --enable res_audiosocket \
-         --enable func_uuid menuselect.makeopts \
+         --enable func_uuid --disable BUILD_NATIVE menuselect.makeopts \
     && make -j"$(nproc)" \
     && make DESTDIR=/stage install \
     && test -f /stage/usr/lib/asterisk/modules/app_audiosocket.so \
