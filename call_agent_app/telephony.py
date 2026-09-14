@@ -302,6 +302,16 @@ class AsteriskAMI:
     async def ping(self) -> dict[str, str]:
         return await self._action({"Action": "Ping"})
 
+    async def reload_pjsip(self) -> dict[str, str]:
+        """Re-read pjsip.conf without dropping calls on the other trunks.
+
+        Used after the WAN hostname's address moves and the config has been
+        re-rendered — ``module reload`` re-reads the file, which is what picks
+        up a changed ``external_signaling_address``.
+        """
+        return await self._action(
+            {"Action": "Command", "Command": "module reload res_pjsip.so"})
+
     async def originate(self, number: str, caller_id: str = "") -> dict[str, str]:
         return await self.originate_call(number, caller_id=caller_id)
 

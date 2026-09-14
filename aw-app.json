@@ -25,6 +25,16 @@
         "container": 5062,
         "host": 5060,
         "protocol": "udp"
+      },
+      {
+        "container": 5063,
+        "host": 45060,
+        "protocol": "udp"
+      },
+      {
+        "container": "10000-10019",
+        "host": "30000-30019",
+        "protocol": "udp"
       }
     ],
     "env": {
@@ -34,6 +44,14 @@
       "SIP_EXTERNAL_ADDRESS": "${config.sip_external_address}",
       "SIP_BIND_PORT": "5062",
       "SIP_ADVERTISED_PORT": "5060",
+      "WAN_SIP_ENABLED": "${config.wan_sip_enabled}",
+      "WAN_SIP_BIND_PORT": "5063",
+      "WAN_SIP_ADVERTISED_PORT": "45060",
+      "WAN_RTP_PORT_START": "10000",
+      "WAN_RTP_PORT_END": "10019",
+      "WAN_SIP_EXTERNAL_ADDRESS": "${config.wan_sip_external_address}",
+      "WAN_SIP_USERNAME": "${config.wan_sip_username}",
+      "WAN_SIP_PASSWORD": "${config.wan_sip_password}",
       "ASTERISK_AMI_SECRET": "${config.asterisk_ami_secret}",
       "ASTERISK_AMI_HOST": "127.0.0.1",
       "ASTERISK_AUDIO_SOCKET_HOST": "127.0.0.1",
@@ -52,6 +70,8 @@
       "LAN_TRUNK_PASSWORD": "${config.lan_trunk_password}",
       "LAN_TRUNK_IDENTIFY_MATCH": "${config.lan_trunk_identify_match}",
       "LAN_TRUNK_CALLER_ID": "${config.lan_trunk_caller_id}",
+      "LAN_TRUNK_STRIP_PREFIX": "${config.lan_trunk_strip_prefix}",
+      "LAN_TRUNK_DIAL_PREFIX": "${config.lan_trunk_dial_prefix}",
       "AW_AGENTS_PLATFORM_BASE": "${config.agents_platform_base}",
       "AW_AGENTS_PLATFORM_TOKEN": "${config.agents_platform_token}",
       "AW_CALL_AGENT_SLUG": "${config.agent_slug}",
@@ -456,6 +476,31 @@
         "default": "",
         "title": "LAN trunk: add dial prefix",
         "description": "Prepended to the number after stripping, for example an outside-line digit."
+      },
+      "wan_sip_enabled": {
+        "type": "boolean",
+        "default": false,
+        "title": "Enable internet SIP (WAN)",
+        "description": "Let one softphone register over the public internet and place calls on the LAN trunk. Needs the LAN SIP trunk on, a public hostname below, and a UDP port-forward on your router to 45060 (signalling) plus 10000-10019 mapped to 30000-30019 (audio). Everything on this leg crosses the internet unencrypted."
+      },
+      "wan_sip_external_address": {
+        "type": "string",
+        "default": "",
+        "title": "Public SIP hostname",
+        "description": "Hostname or IP the softphone points at and Asterisk advertises, for example a home DDNS name. Resolved once at start; the app re-checks it and reloads Asterisk when the address behind it changes."
+      },
+      "wan_sip_username": {
+        "type": "string",
+        "x-generate": "uuid4",
+        "title": "Internet SIP username",
+        "description": "Generated, not chosen — this endpoint is reachable from the whole internet and a guessable user is the attack. Copy it into the softphone."
+      },
+      "wan_sip_password": {
+        "type": "string",
+        "x-secret": true,
+        "x-generate": "urlsafe32",
+        "title": "Internet SIP password",
+        "description": "Generated high-entropy password for the internet-facing SIP user. To rotate it, replace this value with a new one of at least 16 characters and save — the container re-renders Asterisk and the old credential stops working."
       },
       "asterisk_ami_host": {
         "type": "string",

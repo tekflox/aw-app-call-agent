@@ -43,7 +43,7 @@ COPY container/ ./container/
 RUN chmod +x /app/container/entrypoint.sh && mkdir -p /app/data
 
 ENV PYTHONUNBUFFERED=1 AW_CALL_AGENT_DATA=/app/data PORT=9412 AW_APP_HOST=0.0.0.0
-EXPOSE 9412/tcp 5060/udp 10000-10100/udp
+EXPOSE 9412/tcp 5060/udp 5062/udp 5063/udp 10000-10100/udp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9412/api/apps/call-agent/health',timeout=4)"
 ENTRYPOINT ["/app/container/entrypoint.sh"]

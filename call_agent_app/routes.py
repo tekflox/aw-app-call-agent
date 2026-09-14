@@ -65,7 +65,8 @@ class SipIntegrationTestRequest(BaseModel):
 
 def build_routes(config_provider: Callable[[], dict] | None = None,
                  call_store: CallStore | None = None,
-                 audio_bridge_provider: Callable[[], object] | None = None) -> FastAPI:
+                 audio_bridge_provider: Callable[[], object] | None = None,
+                 wan_watch: object | None = None) -> FastAPI:
     """Mode-agnostic factory.
 
     ``config_provider`` is read on **every** request rather than once at
@@ -202,6 +203,27 @@ def build_routes(config_provider: Callable[[], dict] | None = None,
             "password": password if reveal_password else ("********" if password else ""),
             "call_agent_extension": str(cfg.get("call_agent_extension") or "700"),
             "codecs": ["PCMA/alaw", "PCMU/ulaw"],
+        }
+
+    @app.get("/telephony/wan-extension")
+    async def wan_extension(reveal_password: bool = Query(False)) -> dict:
+        """The four values to type into a softphone on the public internet.
+
+        Deliberately the ADVERTISED port, never the bind port: the transport
+        binds a port nothing publishes so its outbound UDP survives the host's
+        NAT, and the number the phone must dial is the published one.
+        """
+        cfg = raw_config()
+        password = str(cfg.get("wan_sip_password") or "")
+        return {
+            "enabled": bool(cfg.get("wan_sip_enabled")),
+            "server": str(cfg.get("wan_sip_external_address") or ""),
+            "port": int(str(cfg.get("wan_sip_advertised_port") or "45060")),
+            "transport": "udp",
+            "username": str(cfg.get("wan_sip_username") or ""),
+            "password": password if reveal_password else ("********" if password else ""),
+            "codecs": ["PCMU/ulaw", "PCMA/alaw"],
+            "address_watch": wan_watch.status() if wan_watch else None,
         }
 
     @app.get("/telephony/calls")

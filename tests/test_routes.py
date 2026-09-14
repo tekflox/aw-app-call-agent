@@ -414,6 +414,151 @@ def test_internal_extension_auto_address_uses_workspace_hostname(monkeypatch):
     )
 
 
+WAN_CFG = dict(
+    CONFIG, wan_sip_enabled=True, wan_sip_external_address="home.example.com",
+    wan_sip_username="3f1c9a02-5b6d-4e7f-8a90-1b2c3d4e5f60",
+    wan_sip_password="wan-password-with-enough-entropy",
+    wan_sip_advertised_port="45060",
+)
+
+
+def test_wan_extension_reports_the_forwarded_port_not_the_bind_port():
+    """The number to type into the softphone is the one the router forwards.
+
+    The transport binds a port nothing publishes so its outbound UDP survives
+    the host's NAT; naming that port here would produce a softphone that can
+    never reach anything.
+    """
+    api = TestClient(build_routes(config_provider=lambda: WAN_CFG))
+    body = api.get("/telephony/wan-extension").json()
+
+    assert body["enabled"] is True
+    assert body["server"] == "home.example.com"
+    assert body["port"] == 45060
+    assert body["transport"] == "udp"
+    assert body["username"] == "3f1c9a02-5b6d-4e7f-8a90-1b2c3d4e5f60"
+    assert body["password"] == "********"
+
+    shown = api.get("/telephony/wan-extension?reveal_password=true").json()
+    assert shown["password"] == "wan-password-with-enough-entropy"
+
+
+def test_wan_extension_reports_disabled_without_leaking_the_password():
+    api = TestClient(build_routes(config_provider=lambda: CONFIG))
+    body = api.get("/telephony/wan-extension").json()
+
+    assert body["enabled"] is False
+    assert body["password"] == ""
+
+
+def test_wan_address_watch_reports_drift_and_reloads_pjsip(tmp_path, monkeypatch):
+    """The failure this exists for is silent: Registered, and no audio.
+
+    PJSIP resolves external_signaling_address once at load, so when the home
+    lease renews Asterisk keeps advertising a dead address forever.
+    """
+    import socket as socket_mod
+
+    from call_agent_app import wan_watch as wan_watch_mod
+
+    monkeypatch.setenv("ASTERISK_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "wan_state.json").write_text(json.dumps({
+        "enabled": True, "hostname": "home.example.com",
+        "address": "188.250.165.236", "bind_port": "5063",
+        "advertised_port": "45060"}))
+    monkeypatch.setattr(socket_mod, "gethostbyname", lambda _h: "203.0.113.77")
+
+    watch = wan_watch_mod.WanAddressWatch(lambda: WAN_CFG)
+    rerendered = []
+    async def fake_rerender():
+        rerendered.append(True)
+    watch._rerender_and_reload = fake_rerender
+
+    status = asyncio.run(watch.check_once())
+
+    assert rerendered == [True]
+    assert status["resolved_ip"] == "203.0.113.77"
+    assert status["advertised_ip"] == "188.250.165.236"
+    assert status["in_sync"] is False
+
+
+def test_wan_address_watch_does_nothing_while_the_address_holds(tmp_path, monkeypatch):
+    import socket as socket_mod
+
+    from call_agent_app import wan_watch as wan_watch_mod
+
+    monkeypatch.setenv("ASTERISK_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "wan_state.json").write_text(json.dumps({
+        "enabled": True, "hostname": "home.example.com",
+        "address": "188.250.165.236"}))
+    monkeypatch.setattr(socket_mod, "gethostbyname", lambda _h: "188.250.165.236")
+
+    watch = wan_watch_mod.WanAddressWatch(lambda: WAN_CFG)
+    async def fail():
+        raise AssertionError("re-rendered despite the address not moving")
+    watch._rerender_and_reload = fail
+
+    assert asyncio.run(watch.check_once())["in_sync"] is True
+
+
+def test_wan_address_watch_treats_a_resolver_failure_as_unknown_not_drift(
+        tmp_path, monkeypatch):
+    """A DNS hiccup must not re-render Asterisk out from under live calls."""
+    import socket as socket_mod
+
+    from call_agent_app import wan_watch as wan_watch_mod
+
+    monkeypatch.setenv("ASTERISK_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "wan_state.json").write_text(json.dumps({
+        "enabled": True, "hostname": "home.example.com",
+        "address": "188.250.165.236"}))
+
+    def boom(_h):
+        raise OSError("temporary failure in name resolution")
+
+    monkeypatch.setattr(socket_mod, "gethostbyname", boom)
+
+    watch = wan_watch_mod.WanAddressWatch(lambda: WAN_CFG)
+    async def fail():
+        raise AssertionError("re-rendered on a resolver failure")
+    watch._rerender_and_reload = fail
+
+    status = asyncio.run(watch.check_once())
+    assert status["in_sync"] is None
+    assert "name resolution" in status["error"]
+
+
+def test_ami_reload_pjsip_sends_the_module_reload_command():
+    async def scenario():
+        seen = []
+
+        async def fake_ami(reader, writer):
+            writer.write(b"Asterisk Call Manager/5.0\r\n")
+            await writer.drain()
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"Response: Success\r\n\r\n")
+            await writer.drain()
+            seen.append((await reader.readuntil(b"\r\n\r\n")).decode())
+            writer.write(b"Response: Success\r\nMessage: Module reloaded\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(fake_ami, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        settings = TelephonySettings(
+            enabled=True, sip_username="u", sip_password="p",
+            public_number="+351300000000", ami_port=port,
+            ami_secret="local-secret",
+        )
+        async with server:
+            await AsteriskAMI(settings).reload_pjsip()
+        return seen
+
+    seen = asyncio.run(scenario())
+    assert "Action: Command" in seen[0]
+    assert "Command: module reload res_pjsip.so" in seen[0]
+
+
 def test_ami_ping_and_originate_use_the_expected_protocol():
     async def scenario():
         actions = []

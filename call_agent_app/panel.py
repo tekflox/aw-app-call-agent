@@ -112,7 +112,44 @@ STATUS_HTML = r"""<!doctype html>
               tel.configured ? 'ok' : 'bad');
       document.getElementById('t').innerHTML = html
         + row('Platform reachable', '<span id="reach">checking…</span>')
-        + row('Asterisk', '<span id="ast">checking…</span>');
+        + row('Asterisk', '<span id="ast">checking…</span>')
+        + row('Internet SIP', '<span id="wan">checking…</span>');
+      // The Zoiper-from-anywhere leg. Its credentials are generated and shown
+      // here because there is nowhere else to read them: the container gets
+      // them as environment, and the Settings form masks the password.
+      fetch(BASE + '/telephony/wan-extension', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (w) {
+          var el = document.getElementById('wan');
+          if (!w.enabled) { el.textContent = 'disabled'; return; }
+          el.textContent = 'enabled'; el.className = 'ok';
+          var extra = row('Softphone server', '<code>' + (w.server || 'not set') + '</code>',
+                          w.server ? '' : 'bad')
+            + row('Softphone port', '<code>' + w.port + '</code> (UDP)')
+            + row('Softphone username', '<code>' + (w.username || 'not set') + '</code>',
+                  w.username ? '' : 'bad')
+            + row('Softphone password',
+                  '<a href="' + BASE + '/telephony/wan-extension?reveal_password=1" '
+                  + 'target="_blank" rel="noopener">reveal</a>');
+          var a = w.address_watch || {};
+          if (a.hostname) {
+            // Out of sync means Asterisk is advertising an address the home
+            // connection no longer has: registration still succeeds and every
+            // call is silent, so it has to be visible rather than inferred.
+            var sync = a.in_sync === null || a.in_sync === undefined
+              ? 'not checked yet'
+              : (a.in_sync ? 'in sync (' + a.resolved_ip + ')'
+                 : 'STALE — advertising ' + a.advertised_ip + ', '
+                   + a.hostname + ' now resolves to ' + a.resolved_ip);
+            extra += row('Public address', sync,
+                         a.in_sync === false ? 'bad' : (a.in_sync ? 'ok' : ''));
+          }
+          document.getElementById('t').innerHTML += extra;
+        })
+        .catch(function () {
+          var el = document.getElementById('wan');
+          if (el) { el.textContent = 'unknown'; }
+        });
       fetch(BASE + '/telephony/status', { credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (t) {

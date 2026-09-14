@@ -31,6 +31,7 @@ from .speech_pipeline import SipSpeechPipeline
 from .realtime_voice import OpenAIRealtimeVoiceSession
 from . import settings as settings_mod
 from .routes import build_routes
+from .wan_watch import WanAddressWatch
 
 SLUG = "call-agent"
 DEFAULT_PORT = 9412
@@ -75,11 +76,18 @@ def _container_config() -> dict:
         "internal_sip_password": "INTERNAL_SIP_PASSWORD",
         "call_agent_extension": "CALL_AGENT_EXTENSION",
         "sip_external_address": "SIP_EXTERNAL_ADDRESS",
+        # render_asterisk.py reads the LAN trunk's own env directly; only the
+        # WAN values are needed up here, for the Zoiper-settings route.
+        "wan_sip_external_address": "WAN_SIP_EXTERNAL_ADDRESS",
+        "wan_sip_username": "WAN_SIP_USERNAME",
+        "wan_sip_password": "WAN_SIP_PASSWORD",
+        "wan_sip_advertised_port": "WAN_SIP_ADVERTISED_PORT",
     }
     cfg = {key: os.environ[name] for key, name in mapping.items()
            if os.environ.get(name) not in (None, "")}
-    cfg["telephony_enabled"] = os.environ.get(
-        "TELEPHONY_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+    for key, name in (("telephony_enabled", "TELEPHONY_ENABLED"),
+                      ("wan_sip_enabled", "WAN_SIP_ENABLED")):
+        cfg[key] = os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
     return cfg
 
 
@@ -107,12 +115,16 @@ def build_standalone_app() -> FastAPI:
         call_finished=pipeline.forget,
     )
 
+    watch = WanAddressWatch(_container_config)
+
     @asynccontextmanager
     async def lifespan(_app):
         await bridge.start()
+        await watch.start()
         try:
             yield
         finally:
+            await watch.stop()
             await bridge.stop()
             store.close()
 
@@ -126,7 +138,8 @@ def build_standalone_app() -> FastAPI:
     if UI_DIST.is_dir() and not tier2:
         app.mount(f"/api/apps/{SLUG}/ui", StaticFiles(directory=UI_DIST), name="ui")
     routes = build_routes(config_provider=_container_config, call_store=store,
-                          audio_bridge_provider=lambda: bridge)
+                          audio_bridge_provider=lambda: bridge,
+                          wan_watch=watch)
     app.mount("/" if tier2 else f"/api/apps/{SLUG}", routes)
 
     @app.get("/")
