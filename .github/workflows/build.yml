@@ -8,7 +8,7 @@ on:
       include_arm64:
         description: "Also build linux/arm64"
         type: boolean
-        default: false
+        default: true
 
 concurrency:
   group: build-aw-app-call-agent-${{ github.ref }}
