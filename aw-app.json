@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "call-agent",
   "name": "Call Agent",
-  "version": "0.41.0",
+  "version": "0.42.0",
   "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak \u2014 your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
   "tier": "container",
   "requires_ui_refresh": true,
@@ -410,7 +410,7 @@
         "type": "boolean",
         "default": false,
         "title": "Enable LAN SIP trunk",
-        "description": "Add a SIP gateway on the local network (for example an analog telephone adapter) as a trunk. Independent of the SIP provider trunk above — either, both or neither can be on."
+        "description": "Add a SIP gateway on the local network (for example an analog telephone adapter) as a trunk. Independent of the SIP provider trunk above \u2014 either, both or neither can be on."
       },
       "lan_trunk_host": {
         "type": "string",
@@ -440,7 +440,7 @@
         "type": "string",
         "default": "",
         "title": "LAN trunk source address",
-        "description": "Source address Asterisk actually sees for inbound calls from the gateway. Leave blank to use the trunk address. Set it when the container reaches the network through NAT — on a macOS podman host inbound packets arrive from the container-network gateway (for example 10.88.0.5), never from the device's own LAN address, and matching the latter silently never fires."
+        "description": "Source address Asterisk actually sees for inbound calls from the gateway. Leave blank to use the trunk address. Set it when the container reaches the network through NAT \u2014 on a macOS podman host inbound packets arrive from the container-network gateway (for example 10.88.0.5), never from the device's own LAN address, and matching the latter silently never fires."
       },
       "lan_trunk_caller_id": {
         "type": "string",
