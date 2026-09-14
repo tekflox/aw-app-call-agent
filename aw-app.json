@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "call-agent",
   "name": "Call Agent",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "description": "Talk to your workspace agent out loud. Open the Call window, hit call, and speak \u2014 your voice is transcribed, sent to the agent you picked, and the reply is streamed back and spoken to you in your own language. Keeps the conversation going across calls instead of starting from scratch every time.",
   "tier": "container",
   "requires_ui_refresh": true,
@@ -493,14 +493,14 @@
         "type": "string",
         "x-generate": "uuid4",
         "title": "Internet SIP username",
-        "description": "Generated, not chosen — this endpoint is reachable from the whole internet and a guessable user is the attack. Copy it into the softphone."
+        "description": "Generated, not chosen \u2014 this endpoint is reachable from the whole internet and a guessable user is the attack. Copy it into the softphone."
       },
       "wan_sip_password": {
         "type": "string",
         "x-secret": true,
         "x-generate": "urlsafe32",
         "title": "Internet SIP password",
-        "description": "Generated high-entropy password for the internet-facing SIP user. To rotate it, replace this value with a new one of at least 16 characters and save — the container re-renders Asterisk and the old credential stops working."
+        "description": "Generated high-entropy password for the internet-facing SIP user. To rotate it, replace this value with a new one of at least 16 characters and save \u2014 the container re-renders Asterisk and the old credential stops working."
       },
       "asterisk_ami_host": {
         "type": "string",
